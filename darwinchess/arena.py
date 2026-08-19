@@ -45,7 +45,13 @@ class Arena:
         games: int | None = None,
     ) -> ArenaResult:
         acfg = self.config["arena"]
-        games = int(games or acfg["games"])
+        requested_games = int(games or acfg["games"])
+        # A paired-opening Arena is only fair when both colors are completed.
+        # Round an odd request up instead of silently leaving the last opening
+        # with only one color represented.
+        games = max(2, requested_games)
+        if games % 2:
+            games += 1
         depth = int(acfg.get("depth", self.config["search"]["depth"]))
         max_plies = int(acfg.get("max_game_plies", 220))
         threshold = float(acfg.get("promotion_score", 0.55))
@@ -61,14 +67,12 @@ class Arena:
 
         seed = int(self.config["project"].get("seed", 0)) + challenger_generation * 1009 + champion_generation
         curriculum = OpeningCurriculum(seed=seed)
-        pairs = curriculum.arena_pairs((games + 1) // 2)
+        pairs = curriculum.arena_pairs(games // 2)
 
         wins = draws = losses = 0
         played = 0
         for pair_index, (start_board, opening_name) in enumerate(pairs):
             for challenger_white in (True, False):
-                if played >= games:
-                    break
                 i = played
                 if challenger_white:
                     record = play_game(
@@ -123,6 +127,7 @@ class Arena:
                     "arena_pair": pair_index,
                     "opening_name": opening_name,
                     "paired_colors": True,
+                    "requested_arena_games": requested_games,
                 })
                 gid = self.memory.add_game(
                     source="arena",
