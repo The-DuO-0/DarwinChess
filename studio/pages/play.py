@@ -366,12 +366,33 @@ class PlayPage(QWidget):
         self._complete_game(result, termination)
         return True
 
+    def _rebuild_clean_pgn(self, result: str, termination: str):
+        """Rebuild only the surviving mainline from board.move_stack.
+
+        During UI takebacks python-chess nodes may retain old variations. Those
+        are useful internally but should not leak into the official saved game.
+        """
+        old_headers = dict(self.game.headers) if self.game is not None else {}
+        clean = chess.pgn.Game()
+        for key, value in old_headers.items():
+            clean.headers[key] = value
+        clean.headers["Result"] = result
+        clean.headers["Termination"] = termination
+        clean.headers["Takebacks"] = str(self.takebacks)
+        node = clean
+        replay = chess.Board()
+        for move in self.board.move_stack:
+            if move not in replay.legal_moves:
+                raise RuntimeError(f"Cannot rebuild PGN: illegal stored move {move.uci()}")
+            node = node.add_variation(move)
+            replay.push(move)
+        self.game = clean
+        self.node = node
+
     def _save_pgn(self, result: str, termination: str):
         if self.game is None:
             return None
-        self.game.headers["Result"] = result
-        self.game.headers["Termination"] = termination
-        self.game.headers["Takebacks"] = str(self.takebacks)
+        self._rebuild_clean_pgn(result, termination)
         folder = state_dir() / "studio_games"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"human_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.pgn"
