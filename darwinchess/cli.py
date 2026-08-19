@@ -17,7 +17,16 @@ from .selfplay import build_pgn
 
 
 def _runtime(args) -> DarwinRuntime:
-    return DarwinRuntime(args.config, mode=args.mode, device=args.device, search_device=args.search_device)
+    # Background/replay-mutating commands yield CPU priority according to their
+    # resource profile. Foreground/status/play commands stay interactive.
+    heavy = getattr(args, "command", None) in {"evolve", "challenge", "selfplay", "teacher"}
+    return DarwinRuntime(
+        args.config,
+        mode=args.mode,
+        device=args.device,
+        search_device=args.search_device,
+        apply_nice=heavy,
+    )
 
 
 def cmd_init(args) -> int:
@@ -40,7 +49,9 @@ def cmd_doctor(args) -> int:
 
 def cmd_selfplay(args) -> int:
     with _runtime(args) as rt:
-        ids = rt.selfplay(args.games)
+        # Standalone replay generation must not overlap an Evolution writer.
+        with EvolutionLock(rt.paths["root"]):
+            ids = rt.selfplay(args.games)
         print(f"saved {len(ids)} self-play games")
         print(json.dumps(rt.status(), ensure_ascii=False, indent=2))
     return 0
@@ -98,7 +109,6 @@ def cmd_play(args) -> int:
         champion = rt.champion_info()
         generation = int(champion["id"])
         checkpoint = str(champion["checkpoint_path"])
-        # Load the exact row we pinned; do not re-query current champion here.
         model, payload = load_checkpoint(checkpoint, rt.search_device)
         genome = rt.genome_from_payload(payload)
         searcher = rt.make_searcher(model, genome=genome, device=rt.search_device)
@@ -226,7 +236,9 @@ def cmd_export(args) -> int:
 
 def cmd_teacher(args) -> int:
     with _runtime(args) as rt:
-        result = rt.teacher_distill(args.positions)
+        # Teacher writes replay labels, so serialize it with Evolution as well.
+        with EvolutionLock(rt.paths["root"]):
+            result = rt.teacher_distill(args.positions)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
