@@ -1,236 +1,169 @@
-# DarwinChess 1.0
+# dog_matist 2.0
 
-**Persistent self-evolving conversational chess agent** designed to run locally and keep learning across restarts.
+**Persistent, self-evolving, conversational chess agent for local machines.**
 
-DarwinChess is not a one-shot trained chess model and it does not throw away experience between runs. It has four durable loops:
+`dog_matist` is the 2.0 continuation of DarwinChess. The project name and Studio identity change, but the learned lifetime does not: 2.0 intentionally reuses the existing `~/.darwinchess` champion checkpoints, SQLite history, replay experience, metrics, and lineage.
 
-1. **Play** — alpha-beta + quiescence search chooses moves using a classical evaluator plus a learned residual CNN value/policy model.
-2. **Remember** — every self-play game, PGN and replay position is written to SQLite (WAL mode).
-3. **Learn** — a challenger starts from the current champion and receives continual SGD updates from the persistent replay memory.
-4. **Prove it** — the challenger must beat the current champion in a held-out Arena before it is allowed to become the next champion.
+> Current branch status: development candidate. Run the automated tests and the Mac upgrade smoke test before treating it as the replacement for a working 1.x installation.
 
-Arena games are deliberately **not** inserted into the training replay buffer, so promotion evaluation stays held out.
+## Core loop
 
-## What is actually implemented
+```text
+SELF-PLAY
+   ↓
+PERSISTENT REPLAY
+   ↓
+TRAIN CHALLENGER
+   ↓
+PAIRED-OPENING ARENA
+   ↓
+PROMOTE / REJECT
+   ↓
+repeat
+```
 
-- Legal chess, SAN/UCI, PGN and UCI-engine integration through `chess`/python-chess.
-- Iterative-deepening negamax alpha-beta search.
-- Quiescence search, move ordering and a transposition table.
-- Stable generation-0 baseline: neural value/policy heads start at zero rather than random behavior.
-- Residual CNN with:
-  - learned side-to-move value head;
-  - factorized from-square / to-square / promotion policy heads.
-- Persistent replay memory with value + policy targets.
-- Continual AdamW training from the champion checkpoint (never training from scratch unless you deliberately reset state).
-- Champion/challenger lineage and rejected-generation history.
-- An inherited **genome** for non-weight behavior; classical-vs-neural trust is itself Arena-gated.
-- Held-out Arena promotion gate with a small-sample Wilson lower-bound guard.
-- Self-play temperature in the opening to preserve exploration.
-- Persistent insights/reflections based on real game history.
-- Chess-native dialogue that reads the real DB; optional local Ollama backend for freer conversation.
-- Optional Stockfish teacher adapter (not required for evolution).
-- `eco`, `normal`, and `night` resource profiles using the same agent and same memory.
-- Research exports: generations, metrics, insights and all PGNs.
-- Mac `caffeinate` overnight launcher.
+A challenger always starts from the current champion. Training alone never replaces the champion. A candidate must pass the held-out Arena gate first.
 
-## Important scientific caveat
+## What changed in 2.0
 
-This system can **continue updating without being retrained from scratch**, but no finite architecture has a literal guarantee of infinite improvement. The research-relevant question is whether persistent replay + online updates + a held-out promotion gate continue producing measurable gains under a fixed local compute budget. DarwinChess stores the lineage and metrics needed to test that rather than claiming it in advance.
+### Opening diversity
 
-## Install on macOS
+Self-play no longer starts every game from the same initial board and relies only on temperature. The opening curriculum mixes:
 
-From Terminal, inside this folder:
+- **35%** standard initial-position free exploration
+- **35%** curated sound openings
+- **20%** uncommon but legal openings
+- **10%** controlled-random legal continuations from sound positions
+
+The curriculum is **not an opening book**. It only chooses a starting position; dog_matist calculates every move from there.
+
+Arena uses **paired openings**. Candidate and Champion play the same starting position twice with colors swapped. Odd Arena game requests are rounded up so a color pair is never left incomplete.
+
+### Play while Evolution runs
+
+Human Play and Evolution are designed to coexist. At the beginning of a game, Studio pins the exact current champion checkpoint and generation. If Evolution promotes a successor while you are still playing, your game keeps the original opponent. The next game receives the new champion.
+
+Evolution has a cross-process single-writer lock: a second Evolution/Challenge writer is refused, while Play, status, and conversation can continue.
+
+### Human game memory
+
+Completed Studio games are saved as PGNs under:
+
+```text
+~/.darwinchess/studio_games/
+```
+
+They are also written to lifetime SQLite memory as `source=human`, with the pinned generation and takeback count. They deliberately add **zero replay examples**, so playing a human never silently teaches the network to imitate that human.
+
+`Abort without saving` writes neither PGN nor lifetime memory.
+
+### Studio 2.0
+
+The desktop Studio includes:
+
+- graphical click-to-move chessboard
+- legal destination hints
+- last-move and check highlighting
+- Play White / Play Black and board flip
+- full-turn undo, resign, and abort-without-saving
+- move, capture, check, and game-over sounds with mute control
+- explicit Self-play / Training / Arena / Promote-or-Reject status
+- current-run progress and elapsed time
+- hover / pressed / disabled button feedback
+- lightweight vector dog_matist mascot with thinking animation during Evolution
+
+## Existing 1.x state is preserved
+
+Default state remains:
+
+```text
+~/.darwinchess/
+```
+
+The first 2.0 setup makes a consistent SQLite backup at:
+
+```text
+~/.darwinchess/backups/pre_dog_matist_2_<timestamp>.sqlite3
+```
+
+It does not duplicate the potentially large checkpoint directory. The installer refuses to upgrade while an old DarwinChess or new dog_matist Evolution process is active; stop Evolution safely first.
+
+The old `darwinchess` CLI command and `DarwinChessAgent` Python class remain compatibility aliases during migration. New integrations may use `dog-matist` and `DogMatistAgent`.
+
+## macOS setup
+
+From Terminal inside the 2.0 project folder:
 
 ```bash
 ./setup_mac.sh
 ```
 
-The script creates `.venv`, installs dependencies, runs the test suite, and runs the hardware doctor. PyTorch uses the MPS device automatically for batch training when it is available; search defaults to CPU because alpha-beta performs many tiny single-position inferences.
+The script:
 
-Manual equivalent:
+1. checks Python 3.11+;
+2. refuses to modify the installation while Evolution is active;
+3. backs up the existing lifetime SQLite database if present;
+4. creates/reuses `.venv`;
+5. installs core + Studio dependencies;
+6. runs the full test suite;
+7. imports the Studio modules headlessly as a smoke test;
+8. runs `dog-matist --mode normal doctor` against the real state.
+
+Then launch Studio:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-
-darwinchess doctor
+./run_studio.command
 ```
 
-## First overnight run
+Or run one normal Evolution cycle:
+
+```bash
+./run_normal.command 1
+```
+
+For a plugged-in overnight run:
 
 ```bash
 ./run_night.command 8
 ```
 
-That runs the complete loop for roughly eight hours. The deadline is checked at safe cycle boundaries, so DarwinChess finishes the active self-play/train/Arena cycle instead of cutting a checkpoint transaction in half:
+The night launcher uses macOS `caffeinate -i`, logs under `~/.darwinchess/logs/`, and still respects the same single-Evolution-writer rule.
 
-```text
-self-play
-  -> durable replay memory
-  -> train challenger from current champion
-  -> held-out Arena
-  -> promote OR reject
-  -> repeat
-```
-
-`Ctrl-C` is safe: games are committed after each completed game and the active champion checkpoint is never overwritten by an unproven challenger.
-
-State lives by default in:
-
-```text
-~/.darwinchess/
-├── darwinchess.sqlite3
-├── checkpoints/
-├── logs/
-└── exports/
-```
-
-Delete that directory only if you intentionally want to erase its lifetime.
-
-## Daily commands
+## CLI
 
 ```bash
-# Is MPS working? Where is the database/checkpoint?
-darwinchess doctor
-
-# Real lifetime status
-darwinchess status
-
-# One complete evolution cycle
-darwinchess --mode normal evolve --cycles 1
-
-# Generate experience only
-darwinchess selfplay --games 10
-
-# Train + test a challenger using existing replay
-darwinchess challenge
-
-# Play the current champion
-darwinchess play --color white
-
-# Analyze the initial position or a FEN
-darwinchess analyze --depth 2
-darwinchess analyze --fen "..."
-
-# Talk to it
-darwinchess chat
-
-darwinchess chat 你最近学到了什么
-
-# Optional: let Stockfish label existing replay positions
-darwinchess teacher --positions 64
-
-# Export data for notebooks / research analysis
-darwinchess export
+dog-matist status
+dog-matist doctor
+dog-matist selfplay --games 10
+dog-matist --mode normal evolve --cycles 1
+dog-matist --mode night evolve --hours 8
+dog-matist challenge --steps 120 --games 10
+dog-matist play --color white
+dog-matist chat
+dog-matist export
 ```
 
-## Embed it as an Agent extension
-
-The stable Python boundary is `DarwinChessAgent`:
-
-```python
-from darwinchess.api import DarwinChessAgent
-
-with DarwinChessAgent(mode="normal") as chess_skill:
-    state = chess_skill.status()
-    answer = chess_skill.best_move(fen)
-    text = chess_skill.talk("你最近学到了什么？")
-```
-
-The outer agent never needs direct access to PyTorch or SQLite. See `examples/agent_extension.py`.
-
-## Resource profiles
-
-The architecture never changes between modes; only the compute budget changes.
-
-- **eco**: shallow search, small cycles, low CPU thread count.
-- **normal**: normal foreground/background development.
-- **night**: larger self-play/training/Arena cycles and more CPU threads.
-
-Override any value by copying `configs/default.yaml`, changing values, then using:
-
-```bash
-darwinchess --config my_config.yaml --mode night evolve --hours 8
-```
-
-## Dialogue
-
-Without any external LLM, `darwinchess chat` already answers from its real memory and analyzes positions. It will not invent an Elo or fake lessons learned.
-
-For freer local natural-language conversation, install/run Ollama separately and add an override config such as:
-
-```yaml
-dialogue:
-  ollama_model: qwen3:4b
-```
-
-The LLM is the **language layer**, not the chess brain. Chess decisions and evolution remain deterministic/testable components.
-
-## Optional Stockfish teacher
-
-Stockfish is intentionally optional. If installed (commonly `/opt/homebrew/bin/stockfish`) DarwinChess can use the `chess.engine` UCI interface to label positions already present in replay:
-
-```bash
-darwinchess teacher --positions 64
-```
-
-Those labels become explicit teacher examples; the core self-play/evolution loop remains able to run without Stockfish.
+Terminal Play also pins its champion at game start. It supports `undo`, `resign`, and `quit`; quitting/interrupting aborts without writing a completed game.
 
 ## Architecture
 
-```text
-                         Dialogue
-                            |
-                            v
-+---------+           +------------+            +----------------+
-|  Human  | <-------> |   Agent    | <--------> | Long-term DB   |
-+---------+           +------------+            | games/examples |
-                            |                    | lineage/metrics |
-                            v                    +----------------+
-                    +----------------+
-                    | Search / Brain |
-                    | alpha-beta + Q |
-                    +-------+--------+
-                            |
-                   +--------+---------+
-                   |                  |
-             Classical Eval      Residual CNN
-                               value + policy
-                                      |
-                                      v
-                               Continual Trainer
-                                      |
-                                      v
-                                 Challenger
-                                      |
-                                      v
-                                  Held-out
-                                    Arena
-                               /             \
-                           promote           reject
-                              |                |
-                              +----> lineage <-+
-```
+The learned engine remains under the internal `darwinchess` Python package for backwards compatibility. Major components are:
 
-## Why the first night is not wasted
+- `darwinchess/network.py` — residual CNN value/policy network
+- `darwinchess/evaluator.py` — classical + neural hybrid evaluation
+- `darwinchess/search.py` — iterative-deepening alpha-beta / quiescence search
+- `darwinchess/memory.py` — durable SQLite lifetime/replay store
+- `darwinchess/opening_curriculum.py` — diversified starting positions
+- `darwinchess/selfplay.py` — self-play and replay targets
+- `darwinchess/trainer.py` — continual AdamW training
+- `darwinchess/arena.py` — paired-opening promotion gate
+- `darwinchess/locks.py` — single-writer Evolution protection
+- `darwinchess/runtime.py` — persistent lifecycle/evolution orchestration
+- `darwinchess/api.py` — stable agent boundary and pinned human games
+- `studio/` — dog_matist Studio 2.0
 
-Generation 0's learned heads are zeroed. Its moves therefore come from a real classical search baseline instead of random neural guesses. Its games enter the same permanent replay DB used by every later generation. When you replace or enlarge the neural architecture later, PGNs, examples, metrics, insights, Arena history and experimental lineage remain reusable.
+See [`DOG_MATIST_2.md`](DOG_MATIST_2.md) for migration/safety notes and [`ARCHITECTURE.md`](ARCHITECTURE.md) for the original research architecture background.
 
-## Research directions the current data model already supports
+## Scientific caveat
 
-- replay vs no-replay ablation;
-- reflection/memory ablation;
-- promotion threshold sensitivity;
-- classical/neural mixing schedules;
-- Stockfish-teacher vs pure self-play;
-- deeper-search teacher → shallow-search student distillation;
-- catastrophic forgetting across opening/endgame subsets;
-- compute-budget vs improvement curves;
-- champion lineage survival time and rejected-change analysis.
-
-The database schema is intentionally transparent SQLite so these experiments can be analyzed without a bespoke backend.
-
-
-For implementation details and experiment design, see `docs/ARCHITECTURE.md` and `docs/EXPERIMENTS.md`.
+`dog_matist` can continue updating from its accumulated experience without restarting training from zero, but no finite architecture guarantees unlimited improvement. The useful research question is whether persistent replay, continual updates, diverse self-play, and held-out promotion tests continue producing measurable gains under a fixed local compute budget. The project keeps the lineage and metrics needed to test that rather than assuming the answer.
