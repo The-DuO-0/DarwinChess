@@ -52,22 +52,37 @@ def _choose_stochastic(result: SearchResult, ply: int, config: dict[str, Any], r
     candidates = result.candidates[:top_k]
     if temperature <= 1e-6:
         return candidates[0].move
-    # cp-softmax. 160cp is roughly a meaningful but not overwhelming difference.
     denom = max(20.0, temperature * 160.0)
     m = max(c.score_cp for c in candidates)
     weights = [math.exp(max(-12.0, min(12.0, (c.score_cp - m) / denom))) for c in candidates]
     return rng.choices([c.move for c in candidates], weights=weights, k=1)[0]
 
 
-def build_pgn(moves: list[chess.Move], result: str, white_name: str, black_name: str, termination: str) -> str:
+def build_pgn(
+    moves: list[chess.Move],
+    result: str,
+    white_name: str,
+    black_name: str,
+    termination: str,
+    *,
+    initial_board: chess.Board | None = None,
+    opening_name: str | None = None,
+) -> str:
+    board = (initial_board or chess.Board()).copy(stack=False)
     game = chess.pgn.Game()
-    game.headers["Event"] = "DarwinChess"
+    game.headers["Event"] = "dog_matist"
     game.headers["White"] = white_name
     game.headers["Black"] = black_name
     game.headers["Result"] = result
     game.headers["Termination"] = termination
+    if opening_name:
+        game.headers["Opening"] = opening_name
+    if board.fen() != chess.Board().fen():
+        game.headers["SetUp"] = "1"
+        game.headers["FEN"] = board.fen()
+        game.setup(board)
+
     node = game
-    board = chess.Board()
     for move in moves:
         if move not in board.legal_moves:
             break
@@ -87,9 +102,13 @@ def play_game(
     seed: int | None = None,
     depth: int | None = None,
     max_plies: int | None = None,
+    starting_board: chess.Board | None = None,
+    opening_name: str = "Initial position",
+    opening_family: str = "standard",
 ) -> GameRecord:
     rng = random.Random(seed)
-    board = chess.Board()
+    board = (starting_board or chess.Board()).copy(stack=False)
+    initial_board = board.copy(stack=False)
     moves: list[chess.Move] = []
     traces: list[PositionTrace] = []
     max_plies = int(max_plies or config["search"].get("max_game_plies", 240))
@@ -101,7 +120,14 @@ def play_game(
     forced_winner: chess.Color | None = None
     termination = "normal"
 
+    if board.is_game_over(claim_draw=True):
+        outcome = board.outcome(claim_draw=True)
+        forced_winner = outcome.winner if outcome else None
+        termination = outcome.termination.name.lower() if outcome else "terminal_seed"
+
     for ply in range(max_plies):
+        if termination != "normal":
+            break
         outcome = board.outcome(claim_draw=True)
         if outcome is not None:
             forced_winner = outcome.winner
@@ -132,7 +158,6 @@ def play_game(
         traces.append(PositionTrace(
             board.fen(), best_move.uci(), move.uci(), board.turn, chosen_score, best_score
         ))
-
         board.push(move)
         moves.append(move)
     else:
@@ -160,7 +185,6 @@ def play_game(
             target = 0.0
         else:
             target = 1.0 if tr.turn == forced_winner else -1.0
-        # More surprising positions receive slightly higher replay priority.
         gap = max(0.0, tr.best_score_cp - tr.played_score_cp)
         priority = 1.0 + min(2.0, gap / 250.0)
         examples.append(ReplayExample(
@@ -174,7 +198,15 @@ def play_game(
             best_score_cp=tr.best_score_cp,
         ))
 
-    pgn = build_pgn(moves, result_str, white_name, black_name, termination)
+    pgn = build_pgn(
+        moves,
+        result_str,
+        white_name,
+        black_name,
+        termination,
+        initial_board=initial_board,
+        opening_name=opening_name,
+    )
     return GameRecord(
         result=result_str,
         winner=forced_winner,
@@ -186,5 +218,9 @@ def play_game(
             "stochastic": stochastic,
             "depth": depth,
             "trace_count": len(traces),
+            "opening_name": opening_name,
+            "opening_family": opening_family,
+            "start_fen": initial_board.fen(),
+            "seeded_start": initial_board.fen() != chess.Board().fen(),
         },
     )
