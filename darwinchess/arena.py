@@ -51,6 +51,7 @@ class Arena:
         threshold = float(acfg.get("promotion_score", 0.55))
         wilson_z = float(acfg.get("promotion_wilson_z", 1.2816))
 
+        print(f"[dog_matist][stage=arena][detail=0/{games}]", flush=True)
         challenger.eval()
         champion.eval()
         ce = HybridEvaluator(challenger, self.config, self.device, challenger_genome)
@@ -137,6 +138,10 @@ class Arena:
                 )
                 self.memory.add_arena_match(challenger_generation, champion_generation, gid, color, r)
                 played += 1
+                print(
+                    f"[dog_matist][stage=arena][detail={played}/{games}] opening={opening_name} pair={pair_index + 1}",
+                    flush=True,
+                )
 
         score = (wins + 0.5 * draws) / max(1, played)
         n = max(1, played)
@@ -146,4 +151,6 @@ class Arena:
         margin = wilson_z * math.sqrt(score * (1.0 - score) / n + z2 / (4.0 * n * n)) / denom
         wilson_lower = max(0.0, center - margin)
         promoted = score >= threshold and wilson_lower > 0.5
+        final_stage = "promoted" if promoted else "rejected"
+        print(f"[dog_matist][stage={final_stage}][detail=score {score:.3f}]", flush=True)
         return ArenaResult(played, wins, draws, losses, score, wilson_lower, promoted)
