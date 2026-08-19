@@ -11,6 +11,7 @@ from .evaluator import HybridEvaluator
 from .genome import AgentGenome
 from .memory import MemoryStore
 from .network import ChessNet
+from .opening_curriculum import OpeningCurriculum
 from .search import AlphaBetaSearcher
 from .selfplay import play_game
 
@@ -57,72 +58,92 @@ class Arena:
         cs = AlphaBetaSearcher(ce, self.config)
         ps = AlphaBetaSearcher(pe, self.config)
 
+        seed = int(self.config["project"].get("seed", 0)) + challenger_generation * 1009 + champion_generation
+        curriculum = OpeningCurriculum(seed=seed)
+        pairs = curriculum.arena_pairs((games + 1) // 2)
+
         wins = draws = losses = 0
-        for i in range(games):
-            challenger_white = (i % 2 == 0)
-            if challenger_white:
-                record = play_game(
-                    cs, ps, self.config,
-                    white_name=f"challenger-g{challenger_generation}",
-                    black_name=f"champion-g{champion_generation}",
-                    stochastic=False,
-                    seed=100000 + i,
-                    depth=depth,
-                    max_plies=max_plies,
-                )
-                if record.winner is chess.WHITE:
-                    r = 1.0
-                elif record.winner is None:
-                    r = 0.5
+        played = 0
+        for pair_index, (start_board, opening_name) in enumerate(pairs):
+            for challenger_white in (True, False):
+                if played >= games:
+                    break
+                i = played
+                if challenger_white:
+                    record = play_game(
+                        cs, ps, self.config,
+                        white_name=f"challenger-g{challenger_generation}",
+                        black_name=f"champion-g{champion_generation}",
+                        stochastic=False,
+                        seed=100000 + i,
+                        depth=depth,
+                        max_plies=max_plies,
+                        starting_board=start_board,
+                        opening_name=opening_name,
+                        opening_family="arena",
+                    )
+                    if record.winner is chess.WHITE:
+                        r = 1.0
+                    elif record.winner is None:
+                        r = 0.5
+                    else:
+                        r = 0.0
+                    color = "white"
                 else:
-                    r = 0.0
-                color = "white"
-            else:
-                record = play_game(
-                    ps, cs, self.config,
-                    white_name=f"champion-g{champion_generation}",
-                    black_name=f"challenger-g{challenger_generation}",
-                    stochastic=False,
-                    seed=100000 + i,
-                    depth=depth,
-                    max_plies=max_plies,
-                )
-                if record.winner is chess.BLACK:
-                    r = 1.0
-                elif record.winner is None:
-                    r = 0.5
+                    record = play_game(
+                        ps, cs, self.config,
+                        white_name=f"champion-g{champion_generation}",
+                        black_name=f"challenger-g{challenger_generation}",
+                        stochastic=False,
+                        seed=100000 + i,
+                        depth=depth,
+                        max_plies=max_plies,
+                        starting_board=start_board,
+                        opening_name=opening_name,
+                        opening_family="arena",
+                    )
+                    if record.winner is chess.BLACK:
+                        r = 1.0
+                    elif record.winner is None:
+                        r = 0.5
+                    else:
+                        r = 0.0
+                    color = "black"
+
+                if r == 1.0:
+                    wins += 1
+                elif r == 0.5:
+                    draws += 1
                 else:
-                    r = 0.0
-                color = "black"
+                    losses += 1
 
-            if r == 1.0:
-                wins += 1
-            elif r == 0.5:
-                draws += 1
-            else:
-                losses += 1
-            gid = self.memory.add_game(
-                source="arena",
-                generation=challenger_generation,
-                white_agent=f"challenger-g{challenger_generation}" if challenger_white else f"champion-g{champion_generation}",
-                black_agent=f"champion-g{champion_generation}" if challenger_white else f"challenger-g{challenger_generation}",
-                result=record.result,
-                termination=record.termination,
-                pgn=record.pgn,
-                plies=record.plies,
-                examples=[],  # Arena is held out and never leaks into replay.
-                metadata=record.metadata,
-            )
-            self.memory.add_arena_match(challenger_generation, champion_generation, gid, color, r)
+                metadata = dict(record.metadata)
+                metadata.update({
+                    "arena_pair": pair_index,
+                    "opening_name": opening_name,
+                    "paired_colors": True,
+                })
+                gid = self.memory.add_game(
+                    source="arena",
+                    generation=challenger_generation,
+                    white_agent=f"challenger-g{challenger_generation}" if challenger_white else f"champion-g{champion_generation}",
+                    black_agent=f"champion-g{champion_generation}" if challenger_white else f"challenger-g{challenger_generation}",
+                    result=record.result,
+                    termination=record.termination,
+                    pgn=record.pgn,
+                    plies=record.plies,
+                    examples=[],
+                    metadata=metadata,
+                )
+                self.memory.add_arena_match(challenger_generation, champion_generation, gid, color, r)
+                played += 1
 
-        score = (wins + 0.5 * draws) / max(1, games)
-        # One-sided Wilson lower bound adds a small-sample guard against
-        # promoting a lucky challenger. Draws count as half a point.
-        n = max(1, games)
+        score = (wins + 0.5 * draws) / max(1, played)
+        n = max(1, played)
         z2 = wilson_z * wilson_z
         denom = 1.0 + z2 / n
         center = (score + z2 / (2.0 * n)) / denom
         margin = wilson_z * math.sqrt(score * (1.0 - score) / n + z2 / (4.0 * n * n)) / denom
         wilson_lower = max(0.0, center - margin)
         promoted = score >= threshold and wilson_lower > 0.5
-        return ArenaResult(games, wins, draws, losses, score, wilson_lower, promoted)
+        return ArenaResult(played, wins, draws, losses, score, wilson_lower, promoted)
