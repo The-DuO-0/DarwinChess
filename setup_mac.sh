@@ -15,10 +15,35 @@ if sys.version_info < (3, 11):
 print("Python", sys.version.split()[0])
 PY
 
-# Preserve the existing DarwinChess lifetime state before the first v2 launch.
-# SQLite's online backup API creates a consistent DB snapshot without copying
-# huge checkpoint files. v2 intentionally keeps using ~/.darwinchess, so the
-# champion lineage and checkpoints stay exactly where they are.
+# Do not replace code while an old/new Evolution process is actively writing
+# the same lifetime state. Play/status do not own this lock and do not block an
+# upgrade once Evolution has been stopped safely.
+"$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import os
+
+root = Path(os.environ.get("DARWINCHESS_HOME") or os.environ.get("DARWINCHESS_STATE_DIR") or "~/.darwinchess").expanduser()
+lock = root / "evolution.lock"
+if lock.exists():
+    try:
+        import fcntl
+        fh = lock.open("a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except BlockingIOError:
+            fh.seek(0)
+            owner = fh.read().strip() or "another process"
+            raise SystemExit(f"Evolution is still running ({owner}). Use Stop safely, then run setup again.")
+        finally:
+            fh.close()
+    except ImportError:
+        pass
+PY
+
+# Preserve the existing lifetime database before the first v2 launch. SQLite's
+# online backup API creates a consistent snapshot without duplicating the large
+# checkpoint directory. v2 intentionally keeps using ~/.darwinchess.
 "$PYTHON_BIN" - <<'PY'
 from datetime import datetime
 from pathlib import Path
@@ -52,8 +77,6 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev,studio]"
 python -m pytest
 
-# Import the GUI modules without opening a window. This catches missing Qt or
-# packaging problems before the user launches Studio.
 QT_QPA_PLATFORM=offscreen python - <<'PY'
 import studio.app
 import studio.backend
