@@ -16,6 +16,10 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
-      - name: Test core
+          python -m pip install -e '.[dev,studio]'
+      - name: Test core and Studio bridge
         run: python -m pytest
+      - name: Import Studio
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import studio.app, studio.backend, studio.pages.play, studio.pages.evolution; print('Studio imports OK')"
