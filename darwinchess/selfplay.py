@@ -9,6 +9,7 @@ import chess
 import chess.pgn
 
 from .memory import ReplayExample
+from .opening_curriculum import CurriculumMix, OpeningCurriculum
 from .search import AlphaBetaSearcher, SearchResult
 
 
@@ -91,6 +92,21 @@ def build_pgn(
     return str(game)
 
 
+def _sample_selfplay_opening(config: dict[str, Any], seed: int | None) -> tuple[chess.Board, str, str]:
+    sp = config.get("selfplay", {})
+    ocfg = sp.get("opening_curriculum", {})
+    if not bool(ocfg.get("enabled", True)):
+        return chess.Board(), "Initial position", "standard"
+    mix = CurriculumMix(
+        standard=float(ocfg.get("standard", 0.35)),
+        curated=float(ocfg.get("curated", 0.35)),
+        uncommon=float(ocfg.get("uncommon", 0.20)),
+        controlled_random=float(ocfg.get("controlled_random", 0.10)),
+    )
+    curriculum = OpeningCurriculum(seed=seed, mix=mix)
+    return curriculum.sample()
+
+
 def play_game(
     white_searcher: AlphaBetaSearcher,
     black_searcher: AlphaBetaSearcher,
@@ -107,6 +123,8 @@ def play_game(
     opening_family: str = "standard",
 ) -> GameRecord:
     rng = random.Random(seed)
+    if starting_board is None and stochastic:
+        starting_board, opening_name, opening_family = _sample_selfplay_opening(config, seed)
     board = (starting_board or chess.Board()).copy(stack=False)
     initial_board = board.copy(stack=False)
     moves: list[chess.Move] = []
