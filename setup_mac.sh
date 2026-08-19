@@ -20,13 +20,16 @@ if [ ! -d .venv ]; then
 fi
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,studio]"
 python -m pytest
 
 echo
-echo "DarwinChess installed. Running hardware doctor..."
-darwinchess --mode normal doctor
+echo "dog_matist 2.0 installed. Running hardware/state doctor..."
+dog-matist --mode normal doctor
 
 echo
-echo "Setup complete. Start an overnight evolution run with:"
+echo "Existing ~/.darwinchess state is intentionally reused, so your champion lineage is preserved."
+echo "Start Studio with:"
+echo "  ./run_studio.command"
+echo "Start an overnight evolution run with:"
 echo "  ./run_night.command 8"
