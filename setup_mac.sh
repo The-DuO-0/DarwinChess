@@ -15,8 +15,6 @@ if sys.version_info < (3, 11):
 print("Python", sys.version.split()[0])
 PY
 
-# DarwinChess 1.x did not have the v2 lock file. Detect its evolution command
-# as well, otherwise an upgrade could happen while the old process is writing.
 if command -v pgrep >/dev/null 2>&1; then
   if pgrep -f 'darwinchess.*evolve|dog-matist.*evolve' >/dev/null 2>&1; then
     echo "An Evolution process is still running. Use Stop safely first, then rerun setup_mac.sh."
@@ -24,8 +22,6 @@ if command -v pgrep >/dev/null 2>&1; then
   fi
 fi
 
-# v2 single-writer lock check. Play/status do not own this lock and therefore
-# can coexist with Evolution during normal use.
 "$PYTHON_BIN" - <<'PY'
 from pathlib import Path
 import os
@@ -93,12 +89,17 @@ import studio.pages.evolution
 print("Studio import smoke test: OK")
 PY
 
+chmod +x run_studio.command run_normal.command run_night.command setup_studio_deps.command SMOKE_TEST.command 2>/dev/null || true
+
 echo
 echo "dog_matist 2.0 installed. Running hardware/state doctor..."
 dog-matist --mode normal doctor
 
 echo
 echo "Upgrade complete. Existing champion lineage remains in ~/.darwinchess."
+echo "Before touching the real lineage with 2.0 Evolution, run the isolated test:"
+echo "  ./SMOKE_TEST.command"
+echo
 echo "Start Studio with:"
 echo "  ./run_studio.command"
 echo
