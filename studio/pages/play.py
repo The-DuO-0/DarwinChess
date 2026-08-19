@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import chess
+import chess.pgn
 
 from PySide6.QtCore import QRectF, Signal, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..data import state_dir
 from ..sound import MoveSoundBank
 
 
@@ -79,30 +83,22 @@ class BoardWidget(QWidget):
         if sq is None:
             return
         piece = self.board.piece_at(sq)
-
         if self.selected is None:
             if piece is not None and piece.color == self.board.turn:
                 self.selected = sq
                 self.update()
             return
-
         if sq == self.selected:
             self.selected = None
             self.update()
             return
-
         candidates = [m for m in self.board.legal_moves if m.from_square == self.selected and m.to_square == sq]
         if candidates:
-            # If several promotion moves are legal, queen is the natural UI default.
             move = next((m for m in candidates if m.promotion == chess.QUEEN), candidates[0])
             self.move_chosen.emit(move.uci())
             self.selected = None
             return
-
-        if piece is not None and piece.color == self.board.turn:
-            self.selected = sq
-        else:
-            self.selected = None
+        self.selected = sq if piece is not None and piece.color == self.board.turn else None
         self.update()
 
     def paintEvent(self, _event):
@@ -112,24 +108,17 @@ class BoardWidget(QWidget):
         ox = (self.width() - side) / 2
         oy = (self.height() - side) / 2
         cell = side / 8
-
         light = QColor("#e6d8be")
         dark = QColor("#8b6b52")
         selected = QColor(92, 142, 255, 150)
         legal = QColor(77, 199, 132, 150)
         last = QColor(235, 197, 77, 125)
         check = QColor(226, 78, 78, 165)
-
-        legal_targets = set()
-        if self.selected is not None:
-            legal_targets = {m.to_square for m in self.board.legal_moves if m.from_square == self.selected}
-
+        legal_targets = {m.to_square for m in self.board.legal_moves if m.from_square == self.selected} if self.selected is not None else set()
         checked_king = self.board.king(self.board.turn) if self.board.is_check() else None
-
         piece_font = QFont("Arial Unicode MS")
         piece_font.setPixelSize(max(26, int(cell * 0.68)))
         p.setFont(piece_font)
-
         for display_rank in range(8):
             for display_file in range(8):
                 if self.flipped:
@@ -141,28 +130,22 @@ class BoardWidget(QWidget):
                 sq = chess.square(file_idx, rank_idx)
                 rect = QRectF(ox + display_file * cell, oy + display_rank * cell, cell, cell)
                 p.fillRect(rect, light if (file_idx + rank_idx) % 2 == 0 else dark)
-
                 if self.last_move and sq in (self.last_move.from_square, self.last_move.to_square):
                     p.fillRect(rect, last)
                 if sq == self.selected:
                     p.fillRect(rect, selected)
                 if sq == checked_king:
                     p.fillRect(rect, check)
-
                 if sq in legal_targets:
                     p.setPen(Qt.NoPen)
                     p.setBrush(legal)
                     radius = cell * (0.13 if self.board.piece_at(sq) is None else 0.34)
                     p.drawEllipse(rect.center(), radius, radius)
-
                 piece = self.board.piece_at(sq)
                 if piece:
                     glyph = PIECES[piece.piece_type][0 if piece.color == chess.WHITE else 1]
-                    # subtle outline via pen keeps glyphs visible on both square colors
                     p.setPen(QPen(QColor("#f8f8f8") if piece.color == chess.WHITE else QColor("#151515"), 1))
                     p.drawText(rect, Qt.AlignCenter, glyph)
-
-        # Coordinates
         coord = QFont()
         coord.setPixelSize(max(9, int(cell * 0.14)))
         coord.setBold(True)
@@ -182,14 +165,18 @@ class PlayPage(QWidget):
         self.board = chess.Board()
         self.human_color = chess.WHITE
         self.pending_move_request: str | None = None
+        self.pending_begin_request: str | None = None
         self.game_active = False
         self.last_move: chess.Move | None = None
         self.sounds = MoveSoundBank(self)
+        self.game: chess.pgn.Game | None = None
+        self.node = None
+        self.pinned_generation: int | None = None
+        self.takebacks = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 24)
         root.setSpacing(14)
-
         title_row = QHBoxLayout()
         title = QLabel("Play dog_matist")
         title.setObjectName("SectionTitle")
@@ -205,25 +192,21 @@ class PlayPage(QWidget):
         self.board_widget = BoardWidget()
         self.board_widget.move_chosen.connect(self._human_move)
         body.addWidget(self.board_widget, 4)
-
         panel = QFrame()
         panel.setObjectName("Panel")
         panel.setFixedWidth(330)
         pl = QVBoxLayout(panel)
         pl.setContentsMargins(18, 18, 18, 18)
         pl.setSpacing(12)
-
         pl.addWidget(QLabel("New game"))
         self.color_box = QComboBox()
         self.color_box.addItems(["Play White", "Play Black"])
         pl.addWidget(self.color_box)
-
         self.new_btn = QPushButton("New game")
         self.new_btn.setObjectName("Primary")
         self.new_btn.setCursor(Qt.PointingHandCursor)
         self.new_btn.clicked.connect(self.new_game)
         pl.addWidget(self.new_btn)
-
         pl.addSpacing(8)
         self.undo_btn = QPushButton("↶  Undo full turn")
         self.resign_btn = QPushButton("Resign")
@@ -234,26 +217,22 @@ class PlayPage(QWidget):
             pl.addWidget(btn)
         self.resign_btn.setObjectName("Danger")
         self.abort_btn.setObjectName("Danger")
-
         self.undo_btn.clicked.connect(self.undo_turn)
         self.resign_btn.clicked.connect(self.resign)
         self.abort_btn.clicked.connect(self.abort_game)
         self.flip_btn.clicked.connect(self.board_widget.toggle_flip)
-
         self.sound_check = QCheckBox("Move sounds")
         self.sound_check.setChecked(True)
-        self.sound_check.toggled.connect(self._sound_toggle)
+        self.sound_check.toggled.connect(lambda enabled: setattr(self.sounds, "enabled", enabled))
         pl.addWidget(self.sound_check)
-
         pl.addSpacing(12)
         pl.addWidget(QLabel("Game status"))
-        self.info = QLabel("This page never adds a human game to training replay automatically.")
+        self.info = QLabel("Completed games save to ~/.darwinchess/studio_games and are never added to training replay automatically.")
         self.info.setObjectName("Subtle")
         self.info.setWordWrap(True)
         pl.addWidget(self.info)
         pl.addStretch()
-
-        help_text = QLabel("Click a piece → legal destinations light up → click a destination.\n\nUndo removes your previous move and dog_matist's reply. Abort discards this UI game.")
+        help_text = QLabel("Click a piece → legal destinations light up → click a destination.\n\nEach game pins one champion generation. Evolution may continue in the background; a promotion only affects your next game.")
         help_text.setObjectName("Subtle")
         help_text.setWordWrap(True)
         pl.addWidget(help_text)
@@ -261,32 +240,73 @@ class PlayPage(QWidget):
         root.addLayout(body, 1)
 
         self.agent.move_ready.connect(self._ai_move_ready)
+        self.agent.game_ready.connect(self._game_ready)
         self.agent.error.connect(self._agent_error)
         self._refresh_controls()
 
-    def _sound_toggle(self, enabled: bool):
-        self.sounds.enabled = enabled
-
     def new_game(self):
+        if self.game_active:
+            answer = QMessageBox.question(self, "Start new game", "Abort the current game and start a new one?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            self._end_core_game()
         self.board = chess.Board()
         self.last_move = None
         self.human_color = chess.WHITE if self.color_box.currentIndex() == 0 else chess.BLACK
-        self.game_active = True
         self.pending_move_request = None
+        self.game_active = False
+        self.pinned_generation = None
+        self.takebacks = 0
         self.board_widget.flipped = self.human_color == chess.BLACK
         self.board_widget.set_board(self.board)
-        self.state_label.setText("● YOUR TURN" if self.board.turn == self.human_color else "● dog_matist THINKING")
-        self.info.setText("Game started. Champion snapshot is used through this UI session.")
+        self.state_label.setText("● PINNING CHAMPION…")
+        self.info.setText("Loading a fixed champion snapshot for this game.")
+        self.pending_begin_request = self.agent.request_begin_game()
+        self._refresh_controls()
+
+    def _game_ready(self, request_id: str, payload: object):
+        if request_id != self.pending_begin_request:
+            return
+        self.pending_begin_request = None
+        data = payload if isinstance(payload, dict) else {}
+        self.pinned_generation = int(data.get("generation")) if data.get("generation") is not None else None
+        self.game_active = True
+        self._new_pgn()
+        gen = f"Gen {self.pinned_generation}" if self.pinned_generation is not None else "current champion"
+        self.info.setText(f"Pinned opponent: {gen}. Background evolution can continue safely.")
+        self.state_label.setText("● YOUR TURN" if self.board.turn == self.human_color else "● dog_matist THINKING…")
         self._refresh_controls()
         if self.board.turn != self.human_color:
             self._request_ai_move()
 
+    def _new_pgn(self):
+        self.game = chess.pgn.Game()
+        self.game.headers["Event"] = "dog_matist Studio Human vs Champion"
+        self.game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
+        dog = f"dog_matist-g{self.pinned_generation}" if self.pinned_generation is not None else "dog_matist"
+        self.game.headers["White"] = "Human" if self.human_color == chess.WHITE else dog
+        self.game.headers["Black"] = dog if self.human_color == chess.WHITE else "Human"
+        if self.pinned_generation is not None:
+            self.game.headers["DogMatistGeneration"] = str(self.pinned_generation)
+        self.node = self.game
+
     def _refresh_controls(self):
         human_turn = self.game_active and self.pending_move_request is None and self.board.turn == self.human_color
         self.board_widget.input_enabled = human_turn
+        busy = self.pending_begin_request is not None
+        self.new_btn.setEnabled(not busy)
+        self.color_box.setEnabled(not self.game_active and not busy)
         self.undo_btn.setEnabled(self.game_active and self.pending_move_request is None and len(self.board.move_stack) >= 1)
         self.resign_btn.setEnabled(self.game_active)
         self.abort_btn.setEnabled(self.game_active)
+
+    def _push_move(self, move: chess.Move, was_capture: bool):
+        if self.node is not None:
+            self.node = self.node.add_variation(move)
+        self.board.push(move)
+        self.last_move = move
+        self._post_move_sound(was_capture)
+        self.board_widget.set_board(self.board, move)
 
     def _human_move(self, uci: str):
         if not self.game_active or self.board.turn != self.human_color or self.pending_move_request:
@@ -297,18 +317,12 @@ class PlayPage(QWidget):
                 return
         except ValueError:
             return
-        was_capture = self.board.is_capture(move)
-        self.board.push(move)
-        self.last_move = move
-        self._post_move_sound(was_capture)
-        self.board_widget.set_board(self.board, move)
+        self._push_move(move, self.board.is_capture(move))
         if self._finish_if_over():
             return
         self._request_ai_move()
 
     def _request_ai_move(self):
-        if not self.game_active:
-            return
         self.state_label.setText("● dog_matist THINKING…")
         self.pending_move_request = self.agent.request_move(self.board.fen())
         self._refresh_controls()
@@ -321,11 +335,7 @@ class PlayPage(QWidget):
             move = chess.Move.from_uci(uci)
             if move not in self.board.legal_moves:
                 raise ValueError(f"core returned illegal move {uci}")
-            was_capture = self.board.is_capture(move)
-            self.board.push(move)
-            self.last_move = move
-            self._post_move_sound(was_capture)
-            self.board_widget.set_board(self.board, move)
+            self._push_move(move, self.board.is_capture(move))
         except Exception as exc:
             self.state_label.setText("● ENGINE ERROR")
             self.info.setText(str(exc))
@@ -346,29 +356,52 @@ class PlayPage(QWidget):
     def _finish_if_over(self) -> bool:
         if not self.board.is_game_over(claim_draw=True):
             return False
-        self.game_active = False
         result = self.board.result(claim_draw=True)
-        reason = self.board.outcome(claim_draw=True)
+        outcome = self.board.outcome(claim_draw=True)
+        termination = outcome.termination.name.lower() if outcome else "completed"
+        self._complete_game(result, termination)
+        return True
+
+    def _save_pgn(self, result: str, termination: str):
+        if self.game is None:
+            return None
+        self.game.headers["Result"] = result
+        self.game.headers["Termination"] = termination
+        self.game.headers["Takebacks"] = str(self.takebacks)
+        folder = state_dir() / "studio_games"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"human_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.pgn"
+        with path.open("w", encoding="utf-8") as fh:
+            print(self.game, file=fh, end="\n\n")
+        return path
+
+    def _complete_game(self, result: str, termination: str):
+        self.game_active = False
+        path = self._save_pgn(result, termination)
+        self._end_core_game()
         self.state_label.setText(f"● GAME OVER · {result}")
-        self.info.setText(str(reason.termination.name).replace("_", " ").title() if reason else "Game over")
+        self.info.setText(f"Saved: {path}" if path else "Game completed")
         self.sounds.play("end")
         self._refresh_controls()
-        return True
 
     def undo_turn(self):
         if not self.game_active or self.pending_move_request:
             return
-        # Return to the same human side to move when possible.
         popped = 0
         while self.board.move_stack and popped < 2:
             self.board.pop()
+            if self.node is not None and self.node.parent is not None:
+                self.node = self.node.parent
             popped += 1
         while self.board.move_stack and self.board.turn != self.human_color:
             self.board.pop()
+            if self.node is not None and self.node.parent is not None:
+                self.node = self.node.parent
+        self.takebacks += 1
         self.last_move = self.board.peek() if self.board.move_stack else None
         self.board_widget.set_board(self.board, self.last_move)
-        self.state_label.setText("● YOUR TURN" if self.board.turn == self.human_color else "● dog_matist THINKING…")
-        self.info.setText("Takeback applied locally. No training replay was modified.")
+        self.state_label.setText("● YOUR TURN")
+        self.info.setText(f"Takeback #{self.takebacks} recorded in PGN metadata.")
         self._refresh_controls()
 
     def resign(self):
@@ -377,38 +410,40 @@ class PlayPage(QWidget):
         answer = QMessageBox.question(self, "Resign", "Resign this game?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
-        self.game_active = False
         result = "0-1" if self.human_color == chess.WHITE else "1-0"
+        self._complete_game(result, "human_resignation")
         self.state_label.setText(f"● RESIGNED · {result}")
-        self.info.setText("Resignation recorded only in this UI session. This game is not inserted into training replay.")
-        self.sounds.play("end")
-        self._refresh_controls()
 
     def abort_game(self):
         if not self.game_active:
             return
-        answer = QMessageBox.question(
-            self,
-            "Abort game",
-            "Abort this game without saving it as a completed human game?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
+        answer = QMessageBox.question(self, "Abort game", "Abort this game without saving it?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return
         self.game_active = False
         self.pending_move_request = None
+        self._end_core_game()
         self.board = chess.Board()
         self.last_move = None
+        self.game = None
+        self.node = None
         self.board_widget.set_board(self.board)
         self.state_label.setText("● ABORTED")
-        self.info.setText("Game discarded. Start a new game when you are ready.")
+        self.info.setText("Game discarded and no PGN was written.")
         self._refresh_controls()
 
+    def _end_core_game(self):
+        if self.pinned_generation is not None:
+            self.agent.request_end_game()
+        self.pinned_generation = None
+
     def _agent_error(self, request_id: str, message: str):
-        if request_id != self.pending_move_request:
+        if request_id not in {self.pending_move_request, self.pending_begin_request}:
             return
-        self.pending_move_request = None
+        if request_id == self.pending_begin_request:
+            self.pending_begin_request = None
+        if request_id == self.pending_move_request:
+            self.pending_move_request = None
         self.state_label.setText("● ENGINE ERROR")
         self.info.setText(message)
         self._refresh_controls()
