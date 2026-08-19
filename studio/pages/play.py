@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import chess
 import chess.pgn
 
 from PySide6.QtCore import QRectF, Signal, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,13 +26,13 @@ from ..data import state_dir
 from ..sound import MoveSoundBank
 
 
-PIECES = {
-    chess.KING: ("♔", "♚"),
-    chess.QUEEN: ("♕", "♛"),
-    chess.ROOK: ("♖", "♜"),
-    chess.BISHOP: ("♗", "♝"),
-    chess.KNIGHT: ("♘", "♞"),
-    chess.PAWN: ("♙", "♟"),
+_PIECE_FILES = {
+    chess.KING: "K",
+    chess.QUEEN: "Q",
+    chess.ROOK: "R",
+    chess.BISHOP: "B",
+    chess.KNIGHT: "N",
+    chess.PAWN: "P",
 }
 
 
@@ -47,6 +49,16 @@ class BoardWidget(QWidget):
         self.setMinimumSize(560, 560)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCursor(Qt.PointingHandCursor)
+
+        piece_dir = Path(__file__).resolve().parent.parent / "assets" / "pieces" / "cburnett"
+        self._piece_renderers: dict[tuple[bool, int], QSvgRenderer] = {}
+        for color in (chess.WHITE, chess.BLACK):
+            prefix = "w" if color == chess.WHITE else "b"
+            for piece_type, code in _PIECE_FILES.items():
+                renderer = QSvgRenderer(str(piece_dir / f"{prefix}{code}.svg"))
+                if not renderer.isValid():
+                    raise RuntimeError(f"Invalid/missing chess piece SVG: {prefix}{code}.svg")
+                self._piece_renderers[(color, piece_type)] = renderer
 
     def set_board(self, board: chess.Board, last_move: chess.Move | None = None):
         self.board = board.copy(stack=False)
@@ -101,9 +113,18 @@ class BoardWidget(QWidget):
         self.selected = sq if piece is not None and piece.color == self.board.turn else None
         self.update()
 
+    def _draw_piece(self, painter: QPainter, piece: chess.Piece, square_rect: QRectF) -> None:
+        # Lichess's cburnett pieces are designed in a 45x45 viewBox. Rendering
+        # their SVGs directly keeps edges sharp on Retina/high-DPI displays and
+        # gives white pieces a solid fill with a crisp black outline.
+        margin = square_rect.width() * 0.045
+        target = square_rect.adjusted(margin, margin, -margin, -margin)
+        self._piece_renderers[(piece.color, piece.piece_type)].render(painter, target)
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
         side = min(self.width(), self.height())
         ox = (self.width() - side) / 2
         oy = (self.height() - side) / 2
@@ -116,9 +137,6 @@ class BoardWidget(QWidget):
         check = QColor(226, 78, 78, 165)
         legal_targets = {m.to_square for m in self.board.legal_moves if m.from_square == self.selected} if self.selected is not None else set()
         checked_king = self.board.king(self.board.turn) if self.board.is_check() else None
-        piece_font = QFont("Arial Unicode MS")
-        piece_font.setPixelSize(max(26, int(cell * 0.68)))
-        p.setFont(piece_font)
         for display_rank in range(8):
             for display_file in range(8):
                 if self.flipped:
@@ -143,9 +161,7 @@ class BoardWidget(QWidget):
                     p.drawEllipse(rect.center(), radius, radius)
                 piece = self.board.piece_at(sq)
                 if piece:
-                    glyph = PIECES[piece.piece_type][0 if piece.color == chess.WHITE else 1]
-                    p.setPen(QPen(QColor("#f8f8f8") if piece.color == chess.WHITE else QColor("#151515"), 1))
-                    p.drawText(rect, Qt.AlignCenter, glyph)
+                    self._draw_piece(p, piece, rect)
         coord = QFont()
         coord.setPixelSize(max(9, int(cell * 0.14)))
         coord.setBold(True)
