@@ -78,6 +78,7 @@ class _AgentWorker(QObject):
     talk_ready = Signal(str, str)
     game_ready = Signal(str, object)
     game_ended = Signal(str)
+    game_recorded = Signal(str, object)
     error = Signal(str, str)
     stopped = Signal()
 
@@ -142,6 +143,15 @@ class _AgentWorker(QObject):
         except Exception as exc:
             self.error.emit(request_id, str(exc))
 
+    @Slot(str, object)
+    def record_game(self, request_id: str, payload: object) -> None:
+        try:
+            data = payload if isinstance(payload, dict) else {}
+            result = self.agent.record_human_game(**data)
+            self.game_recorded.emit(request_id, result)
+        except Exception as exc:
+            self.error.emit(request_id, str(exc))
+
     @Slot()
     def shutdown(self) -> None:
         try:
@@ -160,6 +170,7 @@ class AgentBridge(QObject):
     talk_request = Signal(str, str)
     begin_game_request = Signal(str)
     end_game_request = Signal(str)
+    record_game_request = Signal(str, object)
     shutdown_request = Signal()
 
     ready = Signal()
@@ -168,6 +179,7 @@ class AgentBridge(QObject):
     talk_ready = Signal(str, str)
     game_ready = Signal(str, object)
     game_ended = Signal(str)
+    game_recorded = Signal(str, object)
     error = Signal(str, str)
 
     def __init__(self, mode: str = "normal", parent: QObject | None = None) -> None:
@@ -181,6 +193,7 @@ class AgentBridge(QObject):
         self.talk_request.connect(self.worker.talk)
         self.begin_game_request.connect(self.worker.begin_game)
         self.end_game_request.connect(self.worker.end_game)
+        self.record_game_request.connect(self.worker.record_game)
         self.shutdown_request.connect(self.worker.shutdown)
         self.worker.ready.connect(self.ready)
         self.worker.status_ready.connect(self.status_ready)
@@ -188,6 +201,7 @@ class AgentBridge(QObject):
         self.worker.talk_ready.connect(self.talk_ready)
         self.worker.game_ready.connect(self.game_ready)
         self.worker.game_ended.connect(self.game_ended)
+        self.worker.game_recorded.connect(self.game_recorded)
         self.worker.error.connect(self.error)
         self.worker.stopped.connect(self.thread.quit)
         self.thread.start()
@@ -215,6 +229,11 @@ class AgentBridge(QObject):
     def request_end_game(self) -> str:
         rid = uuid.uuid4().hex
         self.end_game_request.emit(rid)
+        return rid
+
+    def request_record_game(self, payload: dict[str, Any]) -> str:
+        rid = uuid.uuid4().hex
+        self.record_game_request.emit(rid, payload)
         return rid
 
     def close(self) -> None:
