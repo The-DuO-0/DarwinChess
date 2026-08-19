@@ -1,70 +1,70 @@
 # Core integration slice (from the live Mac source)
 
-This is the first patch plan against the actual dog_matist training core supplied from the Mac on 2026-08-19. It is staged separately because the public repository currently contains Studio but not every live core module (`locks.py`, `reflection.py`, `teacher.py`, `dialogue.py`, `exporter.py` are still local-only).
+This integration plan is now based on the actual dog_matist training core supplied from the Mac on 2026-08-19, including the local `locks.py`, `reflection.py`, and `teacher.py` modules.
 
-## What is now implemented in the integration patch
+## Implemented in the V2 preview patch
 
 ### 1. One GPU budget, several candidates
 
-The old cycle spent all `training.steps_per_cycle` on one challenger. The population cycle spends approximately the same number of optimizer steps as:
+The old cycle spent all `training.steps_per_cycle` on one challenger. The population cycle spends approximately the same optimizer-step budget as one shared base update plus short role-specific branches.
 
-- a shared base update (default 55% of the old budget), then
-- short role-specific branches whose combined fine-tune steps consume the remainder.
+With night mode at 240 steps and population size 3 the default split is roughly 132 shared + 36 balanced + 36 explorer + 36 specialist. Only one MPS trainer is active at a time.
 
-With `night.training_steps_per_cycle = 240` and population size 3 this becomes roughly:
+### 2. Faster parallel CPU self-play
 
-- 132 shared steps
-- 36 balanced steps
-- 36 explorer steps
-- 36 specialist steps
+Night mode can spawn CPU self-play workers while SQLite remains single-writer in the parent process. Each worker uses one Torch thread and now loads the pinned champion checkpoint **once per worker**, rather than once per game. If multiprocessing fails, the runtime falls back to the proven sequential path.
 
-Total: 240 optimizer steps. Only one MPS trainer is active at a time, so several full GPU trainers never fight over Apple Silicon memory bandwidth.
+### 3. Adaptive Mac headroom
 
-### 2. Parallel CPU self-play at night
+A standard-library resource controller samples load, memory headroom, and macOS thermal throttling signals before each self-play batch. Night mode can back off workers under pressure while keeping the trainer-slot invariant at exactly one. Existing POSIX `EvolutionLock` remains the lineage writer boundary.
 
-Night mode can spawn three CPU self-play processes. Every worker pins Torch to one thread and loads the same champion checkpoint independently. SQLite is written only by the parent process. If process spawning fails, the runtime falls back to sequential self-play instead of killing the overnight run.
+### 4. Cheap league screening
 
-### 3. Cheap league screening + unchanged final gate
+Candidates first play paired-opening anchor games against the champion. Only the two strongest challengers receive an extra playoff pair. This avoids a full O(n^2) round robin. League games never directly promote a model.
 
-Candidates first play paired-opening anchor games against the champion. Only the two strongest challengers receive an extra playoff pair. This is intentionally not a full O(n^2) round robin.
+### 5. Adaptive held-out final Arena
 
-The league never promotes directly. The strongest challenger still has to pass the existing held-out `Arena.compare()` promotion rule, preserving the atomic champion safety boundary.
+The V1 fixed small Arena plus Wilson confidence guard was too underpowered: with only 8–10 games it could require a very large observed edge before the confidence lower bound exceeded 0.5. V2 evaluates sequentially in paired-color batches.
 
-### 4. Specialist inheritance is real replay, not just an archived file
+- clear losers can stop early;
+- clear winners can stop early once the existing confidence condition is satisfied;
+- ambiguous candidates can receive up to 30 held-out games instead of being rejected merely because the sample was too small.
 
-League matches are grouped by opening. A candidate that has a large enough opening-specific edge can be written to the specialist archive even if it loses the overall promotion race.
+Promotion still requires both `score >= promotion_score` and the confidence lower bound above 0.5, and held-out Arena games are never inserted into training replay.
 
-For each newly detected specialist, the runtime creates a small amount of self-play from that opening using the specialist checkpoint and inserts those examples into lifetime replay as `specialist_selfplay`. Future explorer/specialist branches can explicitly sample those opening buckets.
+### 6. Specialist inheritance is donor-aware
 
-That means a failed generation can influence descendants without neural-weight averaging.
+League matches are grouped by opening. A candidate can enter the specialist archive even if it loses the overall race. The runtime then creates `specialist_selfplay` from that opening and stores those examples in lifetime replay.
 
-### 5. Forward-only SQLite migration
+The next specialist branch does not only focus the same opening name; it also preferentially samples replay whose `origin_generation` matches active specialist donors. This makes opening-specific inheritance materially stronger than merely keeping an old checkpoint on disk.
 
-New tables:
+### 7. Reflection sees inherited learning
 
-- `population_rounds`
-- `population_members`
-- `league_matches`
-- `specialists`
+`ReflectionEngine` now treats `specialist_selfplay` as genuine self-play and reports how many recent games came from specialist inheritance, so useful failed-generation experience is not invisible in the agent's own insights.
 
-New replay columns:
+### 8. Forward-only SQLite migration
 
-- `opening_name`
-- `opening_family`
-- `origin_generation`
+New tables: `population_rounds`, `population_members`, `league_matches`, `specialists`.
 
-Existing champion rows, games, replay examples, checkpoints, metrics, and insights are not reset.
+New replay columns: `opening_name`, `opening_family`, `origin_generation`, plus the previously added search-target columns. Existing champion rows, games, replay examples, checkpoints, metrics, and insights are not reset.
 
-### 6. Status/UI bridge
+### 9. Status/UI bridge
 
-`runtime.status()` is extended to expose the latest population round, its members, and active specialists so Studio can render a league/battle-royale dashboard without inventing a second state store.
+`runtime.status()` exposes the latest population round, members, active specialists, and last adaptive resource budget for the upcoming Studio Battle Royale dashboard.
 
 ## Validation performed in the development sandbox
 
 - Every modified/new Python file passes `py_compile`.
-- SQLite migration, population/member persistence, opening-tagged replay sampling, league-match persistence, population status lookup, and specialist upsert/query paths pass a local smoke test.
-- Full chess execution was not run in the sandbox because the sandbox Python environment does not have the `chess` package installed and has no network access to install it. The Mac project already declares `chess==1.11.2` in `pyproject.toml`.
+- Forward migration from a V1-like SQLite schema passes.
+- Specialist replay can be sampled by both opening and donor generation.
+- Population/member/specialist persistence paths pass smoke tests.
+- The supplied `EvolutionLock` correctly blocks a second writer while allowing the first writer to release cleanly.
+- Full chess execution cannot be run in this sandbox because the environment lacks the `chess` package and has no network access; the user's Mac project already declares and runs that dependency.
 
-## Still needed before replacing the live core
+## Safety packaging
 
-We need the small local-only modules used by the actual runtime/CLI (`locks.py`, `reflection.py`, `teacher.py`; later `dialogue.py`/`exporter.py` for a complete source snapshot) so the branch can be assembled and smoke-tested as a runnable package instead of a patch set.
+A compact preview installer has been produced locally. It refuses to patch while the evolution lock is held, backs up modified source files, and creates a consistent SQLite backup before first live migration. A separate smoke command uses a temporary `DARWINCHESS_HOME` so doctor/status checks do not touch the real champion.
+
+## Next validation step
+
+Install the preview only after the current Evolution process has stopped safely, run the isolated smoke command, then run one real eco/normal population cycle before enabling an overnight V2 league run. Studio Battle Royale visualization comes after that one-cycle validation.
