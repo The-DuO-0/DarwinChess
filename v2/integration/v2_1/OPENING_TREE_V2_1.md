@@ -43,41 +43,86 @@ A frontier edge is eligible when it is:
 
 Selection weight combines search viability, low visit count, uncertainty, and parent support. Frontier self-play starts from the parent position and forces only the first *dog-discovered* frontier move; search is still run at that position and the replay target remains the search-best move. A current-search safety guard cancels the forced exploration move if it has become too weak. This keeps exploration separate from policy supervision.
 
-## Promotion holdout frontier
+## V2.1.2 — true hidden promotion frontier
 
-League screening and final promotion no longer need to use the exact same opening distribution.
+V2.1.1 used `edge.visits == 0` as the definition of an unplayed promotion frontier. That still had two leaks:
+
+1. the same child position could already have been visited through a transposition even when this parent edge was unplayed;
+2. a hidden frontier position could be reused by multiple promotion gates, turning the holdout into another fixed benchmark over generations.
+
+V2.1.2 fixes both.
+
+A strict promotion frontier now requires:
+
+- the candidate edge has never been played;
+- the **child position itself has zero visits**, including visits through other move orders;
+- the child has never been used by a previous final promotion gate;
+- the move remains within the configured search-gap viability threshold.
+
+Promotion exposure is stored in `opening_eval_exposures`. A strict frontier child is retired from the hidden pool after it is actually evaluated. League exposure is tracked separately and may be reused a small bounded number of times because League is only a screening stage.
+
+The final gate also distinguishes `frontier-eval-holdout` from ordinary `frontier-eval` fallback positions in game metadata, so future research/UI can measure how much of an Arena was genuinely unseen.
+
+### Adaptive-Arena holdout preservation
+
+Arena pre-generates a maximum schedule but may stop early after enough statistical evidence. V2.1.2 marks a hidden position as exposed **only when its paired-color games actually begin**. Unused positions at the tail of an early-stopped schedule are not burned from the holdout pool.
+
+## Evaluation mix
 
 - **League:** may use lightly explored frontier positions because its job is cheap ranking/budget allocation.
-- **Final Arena:** preferentially samples viable frontier child positions with `visits == 0` — positions that search noticed but self-play has not yet actually consumed.
-
-Once self-play visits such a branch, it automatically leaves the strict unplayed holdout pool. This gives the promotion gate a cheap opening-generalization test without maintaining a second human-authored opening book. If the unplayed pool is temporarily too small early in training, the gate falls back to the wider frontier/broad-tree coverage rather than failing.
+- **Final Arena:** preferentially samples strict unseen frontier child positions.
 
 Default promotion mix in the R&D snapshot:
 
 - 20% anchor coverage;
-- 50% frontier, preferring unplayed child branches;
+- 50% frontier, preferring strict unseen child positions;
 - 30% broad OpenTree positions.
 
-## Isolated Mac smoke plan
+If the strict pool is temporarily too small, the gate falls back to the wider frontier/broad-tree coverage rather than failing, and the source label records that it was a fallback rather than a true hidden holdout.
 
-The current snapshot includes an isolated `SMOKE_V21_OPENTREE.py` harness. It copies the live package into a temporary directory, overlays V2.1 there, sets a temporary `DARWINCHESS_HOME`, and then tests:
+## V2.1.2 tree-health research metrics
 
-1. a short natural game creates opening nodes/edges;
-2. OpenTree discovers a viable unplayed frontier from search alternatives;
-3. the next short game starts from that parent and consumes the frontier move, subject to the current-search safety guard;
-4. the branch leaves the strict unplayed holdout pool after being visited.
+The persistent database now supports longitudinal OpenTree health snapshots. Each completed population round can record:
 
-The live source tree and `~/.darwinchess` are not modified by this smoke harness.
+- total nodes and edges;
+- played vs candidate-only edges;
+- viable frontier inventory;
+- strict promotion-holdout inventory;
+- active branch specialists;
+- promotion-holdout exposure count;
+- mature/revisited branch ratio;
+- root first-move visit count;
+- root top-move share;
+- root Shannon entropy and effective branch count `exp(H)`;
+- per-ply node/visit coverage;
+- SQLite database size;
+- a conservative root-collapse warning.
+
+The collapse warning does not fire on tiny samples. Once the natural root has enough visits, it flags a strong first-move monoculture (for example, top move share above roughly 72% or effective root branching below roughly 2.3). This is diagnostic only; it does not automatically mutate training yet.
+
+Snapshots are stored in `opening_tree_snapshots`, and `status()` can expose recent deltas such as node growth, frontier growth, hidden-holdout growth and effective-branching change.
+
+## Isolated Mac smoke plans
+
+Two non-destructive harnesses exist in the local R&D snapshot:
+
+- `SMOKE_V21_OPENTREE.py`: one natural discovery followed by one safe frontier-consumption test.
+- `SMOKE_V212_MULTIRUN.py`: four isolated short rounds checking graph growth, frontier consumption, rotating promotion holdouts and health-snapshot trends.
+
+Both copy the live package into a temporary directory, overlay the R&D files, set a temporary `DARWINCHESS_HOME`, and leave the live source tree plus `~/.darwinchess` untouched.
 
 ## Validation in sandbox
 
-- All modified Python files pass `py_compile`.
+- All modified Python files and smoke harnesses pass `py_compile`.
 - Forward SQLite schema creation passes.
 - Opening node/edge updates and frontier queries pass.
 - Branch-specialist persistence passes.
 - Bounded descendant-region expansion passes.
 - Branch-focused replay sampling successfully draws examples from root + descendants.
-- Strict `max_visits=0` holdout query passes: an unplayed candidate is eligible, and disappears from the holdout after the edge is actually played.
-- Opening-tree memory tests: **2 passed**.
+- Strict promotion holdout rejects transposition leakage.
+- Promotion exposure retirement prevents hidden-position reuse.
+- Opening-tree snapshot/trend deltas pass.
+- Synthetic root-monoculture collapse detection passes.
+- Opening-tree memory/holdout/health tests: **5 passed**.
 
-Full chess execution still must be smoke-tested on the Mac because the sandbox has no `python-chess` installation.
+Full chess execution still must be smoke-tested on the Mac because the development sandbox has no `python-chess` installation. V2.1.2 remains intentionally separate from the live V2.0.1 installation until those isolated checks pass.
