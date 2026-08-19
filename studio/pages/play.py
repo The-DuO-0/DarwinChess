@@ -166,6 +166,7 @@ class PlayPage(QWidget):
         self.human_color = chess.WHITE
         self.pending_move_request: str | None = None
         self.pending_begin_request: str | None = None
+        self.pending_record_request: str | None = None
         self.game_active = False
         self.last_move: chess.Move | None = None
         self.sounds = MoveSoundBank(self)
@@ -173,6 +174,7 @@ class PlayPage(QWidget):
         self.node = None
         self.pinned_generation: int | None = None
         self.takebacks = 0
+        self.last_saved_path = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 24)
@@ -227,7 +229,7 @@ class PlayPage(QWidget):
         pl.addWidget(self.sound_check)
         pl.addSpacing(12)
         pl.addWidget(QLabel("Game status"))
-        self.info = QLabel("Completed games save to ~/.darwinchess/studio_games and are never added to training replay automatically.")
+        self.info = QLabel("Completed games save to PGN + lifetime memory, but never enter training replay automatically.")
         self.info.setObjectName("Subtle")
         self.info.setWordWrap(True)
         pl.addWidget(self.info)
@@ -241,6 +243,7 @@ class PlayPage(QWidget):
 
         self.agent.move_ready.connect(self._ai_move_ready)
         self.agent.game_ready.connect(self._game_ready)
+        self.agent.game_recorded.connect(self._game_recorded)
         self.agent.error.connect(self._agent_error)
         self._refresh_controls()
 
@@ -257,6 +260,7 @@ class PlayPage(QWidget):
         self.game_active = False
         self.pinned_generation = None
         self.takebacks = 0
+        self.last_saved_path = None
         self.board_widget.flipped = self.human_color == chess.BLACK
         self.board_widget.set_board(self.board)
         self.state_label.setText("● PINNING CHAMPION…")
@@ -293,7 +297,7 @@ class PlayPage(QWidget):
     def _refresh_controls(self):
         human_turn = self.game_active and self.pending_move_request is None and self.board.turn == self.human_color
         self.board_widget.input_enabled = human_turn
-        busy = self.pending_begin_request is not None
+        busy = self.pending_begin_request is not None or self.pending_record_request is not None
         self.new_btn.setEnabled(not busy)
         self.color_box.setEnabled(not self.game_active and not busy)
         self.undo_btn.setEnabled(self.game_active and self.pending_move_request is None and len(self.board.move_stack) >= 1)
@@ -377,11 +381,35 @@ class PlayPage(QWidget):
 
     def _complete_game(self, result: str, termination: str):
         self.game_active = False
+        generation = self.pinned_generation
         path = self._save_pgn(result, termination)
+        self.last_saved_path = path
+        if self.game is not None and generation is not None:
+            payload = {
+                "pgn": str(self.game),
+                "result": result,
+                "termination": termination,
+                "plies": len(self.board.move_stack),
+                "human_color": "white" if self.human_color == chess.WHITE else "black",
+                "takebacks": self.takebacks,
+                "generation": generation,
+            }
+            self.pending_record_request = self.agent.request_record_game(payload)
         self._end_core_game()
         self.state_label.setText(f"● GAME OVER · {result}")
-        self.info.setText(f"Saved: {path}" if path else "Game completed")
+        self.info.setText(f"Saved PGN: {path}. Adding encounter to lifetime memory…" if path else "Game completed")
         self.sounds.play("end")
+        self._refresh_controls()
+
+    def _game_recorded(self, request_id: str, payload: object):
+        if request_id != self.pending_record_request:
+            return
+        self.pending_record_request = None
+        data = payload if isinstance(payload, dict) else {}
+        gid = str(data.get("game_id", ""))
+        short = gid[:8] if gid else "saved"
+        location = f"PGN: {self.last_saved_path}. " if self.last_saved_path else ""
+        self.info.setText(f"{location}Lifetime memory: {short} · training replay: OFF")
         self._refresh_controls()
 
     def undo_turn(self):
@@ -429,7 +457,7 @@ class PlayPage(QWidget):
         self.node = None
         self.board_widget.set_board(self.board)
         self.state_label.setText("● ABORTED")
-        self.info.setText("Game discarded and no PGN was written.")
+        self.info.setText("Game discarded: no PGN and no lifetime-memory record were written.")
         self._refresh_controls()
 
     def _end_core_game(self):
@@ -438,12 +466,19 @@ class PlayPage(QWidget):
         self.pinned_generation = None
 
     def _agent_error(self, request_id: str, message: str):
-        if request_id not in {self.pending_move_request, self.pending_begin_request}:
+        relevant = {self.pending_move_request, self.pending_begin_request, self.pending_record_request}
+        if request_id not in relevant:
             return
         if request_id == self.pending_begin_request:
             self.pending_begin_request = None
         if request_id == self.pending_move_request:
             self.pending_move_request = None
+        if request_id == self.pending_record_request:
+            self.pending_record_request = None
+            prefix = f"PGN saved at {self.last_saved_path}, but lifetime-memory write failed: " if self.last_saved_path else "Lifetime-memory write failed: "
+            self.info.setText(prefix + message)
+            self._refresh_controls()
+            return
         self.state_label.setText("● ENGINE ERROR")
         self.info.setText(message)
         self._refresh_controls()
