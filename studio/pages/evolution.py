@@ -115,7 +115,10 @@ class EvolutionPage(QWidget):
                 fl.addWidget(arrow)
         root.addWidget(flow)
 
-        note = QLabel("Opening-diversity gate: this Studio build is prepared for paired-opening Arena and curriculum self-play. Core integration is kept separate from UI so existing checkpoints stay untouched during migration.")
+        note = QLabel(
+            "Opening diversity is ACTIVE: self-play mixes free starts, curated openings, uncommon lines and controlled-random legal positions. "
+            "Arena uses the same opening twice with colors swapped, so a challenger cannot pass just by specializing in one opening."
+        )
         note.setObjectName("InfoNote")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -181,7 +184,8 @@ class EvolutionPage(QWidget):
         self._highlight(stage)
         if detail and "/" in detail:
             try:
-                cur, total = [int(x) for x in detail.split("/", 1)]
+                token = detail.split()[0]
+                cur, total = [int(x) for x in token.split("/", 1)]
                 self.progress.setRange(0, total)
                 self.progress.setValue(cur)
                 self.progress.setVisible(True)
@@ -194,10 +198,10 @@ class EvolutionPage(QWidget):
 
     def _stage_explanation(self, stage: str) -> str:
         return {
-            "starting": "Launching the existing chess core without touching the active champion.",
-            "self-play": "Generating durable experience games.",
+            "starting": "Launching the existing champion lineage without resetting lifetime state.",
+            "self-play": "Generating experience across a diverse opening curriculum.",
             "training": "Updating a challenger from the current champion checkpoint.",
-            "arena": "Held-out challenger vs champion evaluation.",
+            "arena": "Paired-opening held-out challenger vs champion evaluation.",
             "promoted": "The challenger passed the gate and became champion.",
             "rejected": "The challenger failed the gate; the old champion remains active.",
             "stopping safely": "Stop requested; waiting for the chess core's safe boundary.",
