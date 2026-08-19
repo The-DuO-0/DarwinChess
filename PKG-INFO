@@ -1,0 +1,253 @@
+Metadata-Version: 2.4
+Name: darwinchess
+Version: 1.0.0
+Summary: Persistent self-evolving conversational chess agent for local machines
+Author: DarwinChess Project
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: chess==1.11.2
+Requires-Dist: numpy>=1.26
+Requires-Dist: torch>=2.3
+Requires-Dist: PyYAML>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Dynamic: license-file
+
+# DarwinChess 1.0
+
+**Persistent self-evolving conversational chess agent** designed to run locally and keep learning across restarts.
+
+DarwinChess is not a one-shot trained chess model and it does not throw away experience between runs. It has four durable loops:
+
+1. **Play** — alpha-beta + quiescence search chooses moves using a classical evaluator plus a learned residual CNN value/policy model.
+2. **Remember** — every self-play game, PGN and replay position is written to SQLite (WAL mode).
+3. **Learn** — a challenger starts from the current champion and receives continual SGD updates from the persistent replay memory.
+4. **Prove it** — the challenger must beat the current champion in a held-out Arena before it is allowed to become the next champion.
+
+Arena games are deliberately **not** inserted into the training replay buffer, so promotion evaluation stays held out.
+
+## What is actually implemented
+
+- Legal chess, SAN/UCI, PGN and UCI-engine integration through `chess`/python-chess.
+- Iterative-deepening negamax alpha-beta search.
+- Quiescence search, move ordering and a transposition table.
+- Stable generation-0 baseline: neural value/policy heads start at zero rather than random behavior.
+- Residual CNN with:
+  - learned side-to-move value head;
+  - factorized from-square / to-square / promotion policy heads.
+- Persistent replay memory with value + policy targets.
+- Continual AdamW training from the champion checkpoint (never training from scratch unless you deliberately reset state).
+- Champion/challenger lineage and rejected-generation history.
+- An inherited **genome** for non-weight behavior; classical-vs-neural trust is itself Arena-gated.
+- Held-out Arena promotion gate with a small-sample Wilson lower-bound guard.
+- Self-play temperature in the opening to preserve exploration.
+- Persistent insights/reflections based on real game history.
+- Chess-native dialogue that reads the real DB; optional local Ollama backend for freer conversation.
+- Optional Stockfish teacher adapter (not required for evolution).
+- `eco`, `normal`, and `night` resource profiles using the same agent and same memory.
+- Research exports: generations, metrics, insights and all PGNs.
+- Mac `caffeinate` overnight launcher.
+
+## Important scientific caveat
+
+This system can **continue updating without being retrained from scratch**, but no finite architecture has a literal guarantee of infinite improvement. The research-relevant question is whether persistent replay + online updates + a held-out promotion gate continue producing measurable gains under a fixed local compute budget. DarwinChess stores the lineage and metrics needed to test that rather than claiming it in advance.
+
+## Install on macOS
+
+From Terminal, inside this folder:
+
+```bash
+./setup_mac.sh
+```
+
+The script creates `.venv`, installs dependencies, runs the test suite, and runs the hardware doctor. PyTorch uses the MPS device automatically for batch training when it is available; search defaults to CPU because alpha-beta performs many tiny single-position inferences.
+
+Manual equivalent:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+
+darwinchess doctor
+```
+
+## First overnight run
+
+```bash
+./run_night.command 8
+```
+
+That runs the complete loop for roughly eight hours. The deadline is checked at safe cycle boundaries, so DarwinChess finishes the active self-play/train/Arena cycle instead of cutting a checkpoint transaction in half:
+
+```text
+self-play
+  -> durable replay memory
+  -> train challenger from current champion
+  -> held-out Arena
+  -> promote OR reject
+  -> repeat
+```
+
+`Ctrl-C` is safe: games are committed after each completed game and the active champion checkpoint is never overwritten by an unproven challenger.
+
+State lives by default in:
+
+```text
+~/.darwinchess/
+├── darwinchess.sqlite3
+├── checkpoints/
+├── logs/
+└── exports/
+```
+
+Delete that directory only if you intentionally want to erase its lifetime.
+
+## Daily commands
+
+```bash
+# Is MPS working? Where is the database/checkpoint?
+darwinchess doctor
+
+# Real lifetime status
+darwinchess status
+
+# One complete evolution cycle
+darwinchess --mode normal evolve --cycles 1
+
+# Generate experience only
+darwinchess selfplay --games 10
+
+# Train + test a challenger using existing replay
+darwinchess challenge
+
+# Play the current champion
+darwinchess play --color white
+
+# Analyze the initial position or a FEN
+darwinchess analyze --depth 2
+darwinchess analyze --fen "..."
+
+# Talk to it
+darwinchess chat
+
+darwinchess chat 你最近学到了什么
+
+# Optional: let Stockfish label existing replay positions
+darwinchess teacher --positions 64
+
+# Export data for notebooks / research analysis
+darwinchess export
+```
+
+## Embed it as an Agent extension
+
+The stable Python boundary is `DarwinChessAgent`:
+
+```python
+from darwinchess.api import DarwinChessAgent
+
+with DarwinChessAgent(mode="normal") as chess_skill:
+    state = chess_skill.status()
+    answer = chess_skill.best_move(fen)
+    text = chess_skill.talk("你最近学到了什么？")
+```
+
+The outer agent never needs direct access to PyTorch or SQLite. See `examples/agent_extension.py`.
+
+## Resource profiles
+
+The architecture never changes between modes; only the compute budget changes.
+
+- **eco**: shallow search, small cycles, low CPU thread count.
+- **normal**: normal foreground/background development.
+- **night**: larger self-play/training/Arena cycles and more CPU threads.
+
+Override any value by copying `configs/default.yaml`, changing values, then using:
+
+```bash
+darwinchess --config my_config.yaml --mode night evolve --hours 8
+```
+
+## Dialogue
+
+Without any external LLM, `darwinchess chat` already answers from its real memory and analyzes positions. It will not invent an Elo or fake lessons learned.
+
+For freer local natural-language conversation, install/run Ollama separately and add an override config such as:
+
+```yaml
+dialogue:
+  ollama_model: qwen3:4b
+```
+
+The LLM is the **language layer**, not the chess brain. Chess decisions and evolution remain deterministic/testable components.
+
+## Optional Stockfish teacher
+
+Stockfish is intentionally optional. If installed (commonly `/opt/homebrew/bin/stockfish`) DarwinChess can use the `chess.engine` UCI interface to label positions already present in replay:
+
+```bash
+darwinchess teacher --positions 64
+```
+
+Those labels become explicit teacher examples; the core self-play/evolution loop remains able to run without Stockfish.
+
+## Architecture
+
+```text
+                         Dialogue
+                            |
+                            v
++---------+           +------------+            +----------------+
+|  Human  | <-------> |   Agent    | <--------> | Long-term DB   |
++---------+           +------------+            | games/examples |
+                            |                    | lineage/metrics |
+                            v                    +----------------+
+                    +----------------+
+                    | Search / Brain |
+                    | alpha-beta + Q |
+                    +-------+--------+
+                            |
+                   +--------+---------+
+                   |                  |
+             Classical Eval      Residual CNN
+                               value + policy
+                                      |
+                                      v
+                               Continual Trainer
+                                      |
+                                      v
+                                 Challenger
+                                      |
+                                      v
+                                  Held-out
+                                    Arena
+                               /             \
+                           promote           reject
+                              |                |
+                              +----> lineage <-+
+```
+
+## Why the first night is not wasted
+
+Generation 0's learned heads are zeroed. Its moves therefore come from a real classical search baseline instead of random neural guesses. Its games enter the same permanent replay DB used by every later generation. When you replace or enlarge the neural architecture later, PGNs, examples, metrics, insights, Arena history and experimental lineage remain reusable.
+
+## Research directions the current data model already supports
+
+- replay vs no-replay ablation;
+- reflection/memory ablation;
+- promotion threshold sensitivity;
+- classical/neural mixing schedules;
+- Stockfish-teacher vs pure self-play;
+- deeper-search teacher → shallow-search student distillation;
+- catastrophic forgetting across opening/endgame subsets;
+- compute-budget vs improvement curves;
+- champion lineage survival time and rejected-change analysis.
+
+The database schema is intentionally transparent SQLite so these experiments can be analyzed without a bespoke backend.
+
+
+For implementation details and experiment design, see `docs/ARCHITECTURE.md` and `docs/EXPERIMENTS.md`.

@@ -13,7 +13,6 @@ from PySide6.QtCore import QObject, QProcess, QThread, Signal, Slot
 
 
 def darwin_executable() -> str:
-    """Keep the existing core executable for checkpoint/state compatibility."""
     local = Path(sys.executable).resolve().parent / "darwinchess"
     if local.exists():
         return str(local)
@@ -37,10 +36,12 @@ def flatten_mapping(value: Any, prefix: str = "") -> dict[str, Any]:
 def find_state_value(state: dict[str, Any], *aliases: str, default: Any = "—") -> Any:
     flat = flatten_mapping(state)
     aliases = tuple(a.lower().replace(" ", "_") for a in aliases)
+    # exact leaf match first
     for key, value in flat.items():
         leaf = key.split(".")[-1].lower().replace(" ", "_")
         if leaf in aliases:
             return value
+    # then path containment
     for key, value in flat.items():
         norm = key.lower().replace(" ", "_")
         if any(a in norm for a in aliases):
@@ -49,8 +50,9 @@ def find_state_value(state: dict[str, Any], *aliases: str, default: Any = "—")
 
 
 def normalize_move(answer: Any) -> str:
+    """Extract a UCI move from DarwinChessAgent.best_move() across common return shapes."""
     if answer is None:
-        raise ValueError("dog_matist returned no move")
+        raise ValueError("DarwinChess returned no move")
     if isinstance(answer, dict):
         for key in ("move", "best_move", "uci", "bestmove"):
             if key in answer:
@@ -94,7 +96,7 @@ class _AgentWorker(QObject):
                 self.agent = obj
             self.ready.emit()
         except Exception as exc:
-            self.error.emit("startup", f"Could not start chess core: {exc}")
+            self.error.emit("startup", f"Could not start DarwinChessAgent: {exc}")
 
     @Slot(str)
     def get_status(self, request_id: str) -> None:
@@ -190,7 +192,6 @@ class ProcessController(QObject):
     started = Signal(str)
     finished = Signal(int)
     state_changed = Signal(bool)
-    stage_changed = Signal(str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -200,13 +201,12 @@ class ProcessController(QObject):
         self.process.started.connect(self._on_started)
         self.process.finished.connect(self._on_finished)
         self.label = ""
-        self.stage = "idle"
 
     @property
     def running(self) -> bool:
         return self.process.state() != QProcess.NotRunning
 
-    def start(self, args: list[str], label: str = "dog_matist") -> bool:
+    def start(self, args: list[str], label: str = "DarwinChess") -> bool:
         if self.running:
             return False
         self.label = label
@@ -215,72 +215,30 @@ class ProcessController(QObject):
         self.process.start()
         return True
 
-    def _infer_stage(self, text: str):
-        low = text.lower()
-        stage = None
-        detail = ""
-        if any(k in low for k in ("self-play", "selfplay", "self play")):
-            stage = "self-play"
-        if any(k in low for k in ("training", "train challenger", "gradient", "epoch", "batch")):
-            stage = "training"
-        if any(k in low for k in ("arena", "candidate vs", "challenger vs")):
-            stage = "arena"
-        if any(k in low for k in ("promoted", "promote")):
-            stage = "promoted"
-        elif any(k in low for k in ("rejected", "reject")):
-            stage = "rejected"
-        if "sigint" in low or "safe boundary" in low or "stopping" in low:
-            stage = "stopping safely"
-
-        # Pull useful progress snippets without depending on one exact CLI format.
-        m = re.search(r"(?:game|batch|epoch|opening)\s*[#:]?\s*(\d+)\s*/\s*(\d+)", text, re.I)
-        if m:
-            detail = f"{m.group(1)}/{m.group(2)}"
-        if stage and (stage != self.stage or detail):
-            self.stage = stage
-            self.stage_changed.emit(stage, detail)
-
-    def start_evolution(self, mode: str, cycles: int, hours: float) -> bool:
-        args = ["--mode", mode, "evolve"]
-        if hours and hours > 0:
-            args += ["--hours", str(hours)]
-        else:
-            args += ["--cycles", str(max(1, cycles))]
-        return self.start(args, f"Evolution ({mode})")
-
     @Slot()
     def _read_output(self) -> None:
         raw = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if raw:
-            clean = raw.rstrip()
-            self.output.emit(clean)
-            for line in clean.splitlines():
-                self._infer_stage(line)
+            self.output.emit(raw.rstrip())
 
     @Slot()
     def _on_started(self) -> None:
         self.state_changed.emit(True)
         self.started.emit(self.label)
-        self.stage = "starting"
-        self.stage_changed.emit("starting", self.label)
 
     @Slot(int, QProcess.ExitStatus)
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
         self.state_changed.emit(False)
-        self.stage = "idle"
-        self.stage_changed.emit("idle", "")
         self.finished.emit(exit_code)
 
     def stop_safely(self) -> None:
         if not self.running:
             return
-        self.stage = "stopping safely"
-        self.stage_changed.emit("stopping safely", "waiting for safe boundary")
         pid = int(self.process.processId())
         if pid > 0 and os.name == "posix":
             try:
                 os.kill(pid, signal.SIGINT)
-                self.output.emit("[Studio] Stop requested. Waiting for the chess core's safe boundary…")
+                self.output.emit("[Studio] Sent SIGINT; DarwinChess will stop at its safe boundary.")
                 return
             except OSError:
                 pass
