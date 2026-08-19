@@ -56,10 +56,10 @@ def normalize_move(answer: Any) -> str:
     if answer is None:
         raise ValueError("dog_matist returned no move")
     if isinstance(answer, dict):
-        for key in ("move", "best_move", "uci", "bestmove"):
+        for key in ("move_uci", "move", "best_move", "uci", "bestmove"):
             if key in answer:
                 return normalize_move(answer[key])
-    for attr in ("move", "best_move", "uci"):
+    for attr in ("move_uci", "move", "best_move", "uci"):
         if hasattr(answer, attr):
             obj = getattr(answer, attr)
             obj = obj() if callable(obj) else obj
@@ -76,6 +76,8 @@ class _AgentWorker(QObject):
     status_ready = Signal(str, object)
     move_ready = Signal(str, str)
     talk_ready = Signal(str, str)
+    game_ready = Signal(str, object)
+    game_ended = Signal(str)
     error = Signal(str, str)
     stopped = Signal()
 
@@ -88,8 +90,8 @@ class _AgentWorker(QObject):
     @Slot()
     def initialize(self) -> None:
         try:
-            from darwinchess.api import DarwinChessAgent
-            obj = DarwinChessAgent(mode=self.mode)
+            from darwinchess.api import DogMatistAgent
+            obj = DogMatistAgent(mode=self.mode)
             if hasattr(obj, "__enter__"):
                 entered = obj.__enter__()
                 self.agent = entered if entered is not None else obj
@@ -124,6 +126,22 @@ class _AgentWorker(QObject):
         except Exception as exc:
             self.error.emit(request_id, str(exc))
 
+    @Slot(str)
+    def begin_game(self, request_id: str) -> None:
+        try:
+            result = self.agent.begin_game()
+            self.game_ready.emit(request_id, result)
+        except Exception as exc:
+            self.error.emit(request_id, str(exc))
+
+    @Slot(str)
+    def end_game(self, request_id: str) -> None:
+        try:
+            self.agent.end_game()
+            self.game_ended.emit(request_id)
+        except Exception as exc:
+            self.error.emit(request_id, str(exc))
+
     @Slot()
     def shutdown(self) -> None:
         try:
@@ -140,12 +158,16 @@ class AgentBridge(QObject):
     status_request = Signal(str)
     move_request = Signal(str, str)
     talk_request = Signal(str, str)
+    begin_game_request = Signal(str)
+    end_game_request = Signal(str)
     shutdown_request = Signal()
 
     ready = Signal()
     status_ready = Signal(str, object)
     move_ready = Signal(str, str)
     talk_ready = Signal(str, str)
+    game_ready = Signal(str, object)
+    game_ended = Signal(str)
     error = Signal(str, str)
 
     def __init__(self, mode: str = "normal", parent: QObject | None = None) -> None:
@@ -157,11 +179,15 @@ class AgentBridge(QObject):
         self.status_request.connect(self.worker.get_status)
         self.move_request.connect(self.worker.get_best_move)
         self.talk_request.connect(self.worker.talk)
+        self.begin_game_request.connect(self.worker.begin_game)
+        self.end_game_request.connect(self.worker.end_game)
         self.shutdown_request.connect(self.worker.shutdown)
         self.worker.ready.connect(self.ready)
         self.worker.status_ready.connect(self.status_ready)
         self.worker.move_ready.connect(self.move_ready)
         self.worker.talk_ready.connect(self.talk_ready)
+        self.worker.game_ready.connect(self.game_ready)
+        self.worker.game_ended.connect(self.game_ended)
         self.worker.error.connect(self.error)
         self.worker.stopped.connect(self.thread.quit)
         self.thread.start()
@@ -179,6 +205,16 @@ class AgentBridge(QObject):
     def request_talk(self, text: str) -> str:
         rid = uuid.uuid4().hex
         self.talk_request.emit(rid, text)
+        return rid
+
+    def request_begin_game(self) -> str:
+        rid = uuid.uuid4().hex
+        self.begin_game_request.emit(rid)
+        return rid
+
+    def request_end_game(self) -> str:
+        rid = uuid.uuid4().hex
+        self.end_game_request.emit(rid)
         return rid
 
     def close(self) -> None:
