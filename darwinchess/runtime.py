@@ -8,7 +8,6 @@ import copy
 import json
 import os
 import platform
-import random
 
 import chess
 import torch
@@ -17,11 +16,12 @@ from .arena import Arena, ArenaResult
 from .config import apply_mode, choose_device, configure_runtime, ensure_state_dirs, load_config, seed_everything
 from .evaluator import HybridEvaluator
 from .genome import AgentGenome, propose_child_genome
+from .locks import EvolutionLock
 from .memory import MemoryStore
 from .network import ChessNet, load_checkpoint, save_checkpoint
 from .reflection import ReflectionEngine
 from .search import AlphaBetaSearcher, SearchResult
-from .selfplay import GameRecord, play_game
+from .selfplay import play_game
 from .teacher import StockfishTeacher, find_stockfish
 from .trainer import ContinualTrainer, TrainingStats
 
@@ -60,17 +60,13 @@ class DarwinRuntime:
         champion = self.memory.champion_generation()
         if champion is not None:
             if Path(champion["checkpoint_path"]).exists():
-                # A prior process may have been interrupted after saving a
-                # challenger but before completing its Arena. Preserve the
-                # checkpoint/history, but do not leave it looking active.
-                with self.memory.conn:
-                    self.memory.conn.execute(
-                        "UPDATE generations SET status='aborted' WHERE status='challenger'"
-                    )
+                # Important for Studio 2.0 concurrency: merely opening another
+                # runtime (Play, status, Conversation) must never mutate an
+                # in-flight challenger owned by an Evolution process.
                 return
             raise RuntimeError(
                 f"Champion checkpoint is missing: {champion['checkpoint_path']}. "
-                "DarwinChess refuses to silently reset lifetime state."
+                "dog_matist refuses to silently reset lifetime state."
             )
         existing = self.memory.conn.execute("SELECT COUNT(*) AS n FROM generations").fetchone()["n"]
         if int(existing) > 0:
@@ -87,7 +83,7 @@ class DarwinRuntime:
             generation=0,
             metadata={
                 "origin": "classical-baseline-with-zeroed-neural-heads",
-                "created_by": "DarwinChess",
+                "created_by": "dog_matist",
                 "genome": initial_genome.to_dict(),
             },
         )
@@ -98,6 +94,13 @@ class DarwinRuntime:
         )
         self.memory.set_meta("created", True)
         self.memory.set_meta("project_name", self.config["project"]["name"])
+
+    def _retire_stale_challengers(self) -> None:
+        """Retire only challengers left behind before this Evolution lock was acquired."""
+        with self.memory.conn:
+            self.memory.conn.execute(
+                "UPDATE generations SET status='aborted' WHERE status='challenger'"
+            )
 
     def champion_info(self):
         row = self.memory.champion_generation()
@@ -152,13 +155,14 @@ class DarwinRuntime:
         ids: list[str] = []
         base_seed = int(self.config["project"].get("seed", 0)) + self.memory.count_games() * 17
 
+        print(f"[dog_matist][stage=self-play][detail=0/{games}]", flush=True)
         for i in range(games):
             record = play_game(
                 searcher,
                 searcher,
                 self.config,
-                white_name=f"DarwinChess-g{generation}",
-                black_name=f"DarwinChess-g{generation}",
+                white_name=f"dog_matist-g{generation}",
+                black_name=f"dog_matist-g{generation}",
                 stochastic=True,
                 seed=base_seed + i,
                 depth=int(self.config["search"]["depth"]),
@@ -166,8 +170,8 @@ class DarwinRuntime:
             gid = self.memory.add_game(
                 source="selfplay",
                 generation=generation,
-                white_agent=f"DarwinChess-g{generation}",
-                black_agent=f"DarwinChess-g{generation}",
+                white_agent=f"dog_matist-g{generation}",
+                black_agent=f"dog_matist-g{generation}",
                 result=record.result,
                 termination=record.termination,
                 pgn=record.pgn,
@@ -176,6 +180,11 @@ class DarwinRuntime:
                 metadata=record.metadata,
             )
             ids.append(gid)
+            opening = record.metadata.get("opening_name", "Initial position")
+            print(
+                f"[dog_matist][stage=self-play][detail={i + 1}/{games}] opening={opening}",
+                flush=True,
+            )
         self.memory.update_generation(
             generation,
             games_seen=self.memory.count_games(),
@@ -248,7 +257,6 @@ class DarwinRuntime:
             arena_losses=result.losses,
         )
         if result.promoted:
-            # Only one active champion. Keep old checkpoint/history intact.
             row = self.memory.get_generation(challenger_id)
             old_path = Path(row["checkpoint_path"])
             new_path = self.paths["checkpoints"] / f"generation_{challenger_id:06d}_champion.pt"
@@ -273,7 +281,7 @@ class DarwinRuntime:
             )
         return result
 
-    def evolve_cycle(self) -> dict[str, Any]:
+    def _evolve_cycle_unlocked(self) -> dict[str, Any]:
         before = int(self.champion_info()["id"])
         game_ids = self.selfplay()
         ReflectionEngine(self.memory).reflect_recent(before, limit=50)
@@ -301,24 +309,31 @@ class DarwinRuntime:
             "trained": True,
         }
 
+    def evolve_cycle(self) -> dict[str, Any]:
+        with EvolutionLock(self.paths["root"]):
+            self._retire_stale_challengers()
+            return self._evolve_cycle_unlocked()
+
     def evolve(self, *, hours: float | None = None, cycles: int | None = None, progress=print) -> list[dict[str, Any]]:
         if hours is None and cycles is None:
             cycles = 1
         deadline = None if hours is None else monotonic() + max(0.0, hours) * 3600.0
         completed: list[dict[str, Any]] = []
         i = 0
-        while True:
-            if cycles is not None and i >= cycles:
-                break
-            if deadline is not None and monotonic() >= deadline:
-                break
-            i += 1
-            progress(f"[cycle {i}] self-play → replay → train → arena")
-            result = self.evolve_cycle()
-            completed.append(result)
-            progress(json.dumps(result, ensure_ascii=False, indent=2))
-            if deadline is not None and monotonic() >= deadline:
-                break
+        with EvolutionLock(self.paths["root"]):
+            self._retire_stale_challengers()
+            while True:
+                if cycles is not None and i >= cycles:
+                    break
+                if deadline is not None and monotonic() >= deadline:
+                    break
+                i += 1
+                progress(f"[cycle {i}] self-play → replay → train → arena")
+                result = self._evolve_cycle_unlocked()
+                completed.append(result)
+                progress(json.dumps(result, ensure_ascii=False, indent=2))
+                if deadline is not None and monotonic() >= deadline:
+                    break
         return completed
 
     def analyze(self, fen: str | None = None, *, depth: int | None = None, top_n: int = 5) -> SearchResult:
@@ -342,7 +357,7 @@ class DarwinRuntime:
             source="teacher",
             generation=generation,
             white_agent="StockfishTeacher",
-            black_agent=f"DarwinChess-g{generation}",
+            black_agent=f"dog_matist-g{generation}",
             result="*",
             termination="teacher_distillation",
             pgn="",
