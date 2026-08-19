@@ -12,10 +12,10 @@ from .runtime import DarwinRuntime
 class DarwinChessAgent:
     """Stable programmatic boundary for embedding dog_matist in a larger agent.
 
-    The public class name stays compatible with DarwinChess 1.x, while the
-    runtime/project identity is dog_matist. A human game pins one immutable
-    champion snapshot so a promotion in another process never changes the
-    opponent halfway through the game.
+    The public class name stays compatible with DarwinChess 1.x. Embedded
+    agents are treated as interactive, so they keep normal process scheduling
+    priority while separate Evolution worker processes yield according to their
+    resource profile.
     """
 
     def __init__(
@@ -31,6 +31,7 @@ class DarwinChessAgent:
             mode=mode,
             device=device,
             search_device=search_device,
+            apply_nice=False,
         )
         self.dialogue = DialogueAgent(self.runtime)
         self._game_searcher = None
@@ -56,9 +57,6 @@ class DarwinChessAgent:
         champion = self.runtime.champion_info()
         generation = int(champion["id"])
         checkpoint = str(champion["checkpoint_path"])
-        # Load exactly the checkpoint from the row we just pinned. Do not call
-        # load_champion() here: another process may promote a successor between
-        # two independent champion queries.
         model, payload = load_checkpoint(checkpoint, self.runtime.search_device)
         genome = self.runtime.genome_from_payload(payload)
         self._game_searcher = self.runtime.make_searcher(
@@ -117,7 +115,6 @@ class DarwinChessAgent:
         takebacks: int = 0,
         generation: int | None = None,
     ) -> dict[str, Any]:
-        """Remember a completed human encounter without adding replay examples."""
         if human_color not in {"white", "black"}:
             raise ValueError("human_color must be 'white' or 'black'")
         if generation is None:
@@ -159,5 +156,4 @@ class DarwinChessAgent:
         return self.status()
 
 
-# Preferred v2 name while retaining source compatibility for existing agents.
 DogMatistAgent = DarwinChessAgent
