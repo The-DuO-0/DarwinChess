@@ -1,5 +1,6 @@
 project:
-  name: DarwinChess
+  name: dog_matist
+  # Keep the old state directory on purpose so existing champion/checkpoints/history survive v2.
   state_dir: ~/.darwinchess
   seed: 20260817
 
@@ -41,6 +42,12 @@ selfplay:
   resign_threshold_cp: -1100
   resign_consecutive: 5
   allow_resign_after_ply: 50
+  opening_curriculum:
+    enabled: true
+    standard: 0.35
+    curated: 0.35
+    uncommon: 0.20
+    controlled_random: 0.10
 
 arena:
   games: 8
@@ -48,6 +55,7 @@ arena:
   promotion_wilson_z: 1.2816  # ~80% one-sided confidence guard
   depth: 2
   max_game_plies: 220
+  paired_openings: true
 
 resources:
   default_mode: normal
