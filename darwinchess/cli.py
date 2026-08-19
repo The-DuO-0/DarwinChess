@@ -10,6 +10,7 @@ import chess
 
 from .dialogue import DialogueAgent, explain_search
 from .exporter import export_research_bundle
+from .locks import EvolutionLock
 from .runtime import DarwinRuntime
 from .selfplay import build_pgn
 
@@ -56,14 +57,18 @@ def cmd_evolve(args) -> int:
 
 def cmd_challenge(args) -> int:
     with _runtime(args) as rt:
-        trained = rt.train_challenger(args.steps)
-        if trained is None:
-            print("Not enough replay examples yet. Run selfplay/evolve first.")
-            return 2
-        gid, model, stats, path = trained
-        print(f"challenger g{gid} trained: {stats}")
-        result = rt.gate_challenger(gid, model, games=args.games)
-        print(f"arena: {result}")
+        # challenge mutates the same lineage as evolve; it must obey the same
+        # single-writer rule. Human play/status intentionally do not take this lock.
+        with EvolutionLock(rt.paths["root"]):
+            rt._retire_stale_challengers()
+            trained = rt.train_challenger(args.steps)
+            if trained is None:
+                print("Not enough replay examples yet. Run selfplay/evolve first.")
+                return 2
+            gid, model, stats, _path = trained
+            print(f"challenger g{gid} trained: {stats}")
+            result = rt.gate_challenger(gid, model, games=args.games)
+            print(f"arena: {result}")
         print(json.dumps(rt.status(), ensure_ascii=False, indent=2))
     return 0
 
@@ -91,45 +96,95 @@ def _parse_move(board: chess.Board, text: str) -> chess.Move | None:
 
 def cmd_play(args) -> int:
     with _runtime(args) as rt:
-        searcher = rt.make_searcher()
+        # Pin the opponent at game start. Even if a separate Evolution process
+        # promotes a new champion, this game keeps the original model/generation.
+        champion = rt.champion_info()
+        generation = int(champion["id"])
+        model, payload = rt.load_champion(rt.search_device)
+        genome = rt.genome_from_payload(payload)
+        searcher = rt.make_searcher(model, genome=genome, device=rt.search_device)
+
         board = chess.Board()
         played_moves: list[chess.Move] = []
         color = args.color
         if color == "random":
             color = random.choice(["white", "black"])
         human = chess.WHITE if color == "white" else chess.BLACK
-        print(f"You are {color}. Enter SAN (e4, Nf3, O-O) or UCI (e2e4). Type quit to stop.")
+        print(f"You are {color}. Opponent pinned: dog_matist-g{generation}.")
+        print("Enter SAN (e4, Nf3, O-O) or UCI (e2e4). Commands: undo, resign, quit.")
 
+        resigned = False
+        aborted = False
+        takebacks = 0
         while not board.is_game_over(claim_draw=True):
             print("\n" + str(board) + "\n")
             if board.turn == human:
                 while True:
-                    text = input("you> ").strip()
-                    if text.lower() in {"quit", "exit", "q"}:
-                        return 0
+                    try:
+                        text = input("you> ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print("\nGame aborted; nothing was saved.")
+                        aborted = True
+                        break
+                    command = text.lower()
+                    if command in {"quit", "exit", "q"}:
+                        print("Game aborted; nothing was saved.")
+                        aborted = True
+                        break
+                    if command == "resign":
+                        resigned = True
+                        break
+                    if command == "undo":
+                        if not played_moves:
+                            print("Nothing to undo.")
+                            continue
+                        # Remove one full turn where possible and return the move to the human.
+                        popped = 0
+                        while board.move_stack and popped < 2:
+                            board.pop()
+                            played_moves.pop()
+                            popped += 1
+                        while board.move_stack and board.turn != human:
+                            board.pop()
+                            played_moves.pop()
+                        takebacks += 1
+                        print(f"Takeback #{takebacks} applied.")
+                        break
                     move = _parse_move(board, text)
                     if move is not None:
                         board.push(move)
                         played_moves.append(move)
                         break
-                    print("Illegal/unrecognized move.")
-            else:
-                before = board.copy(stack=False)
-                result = searcher.search(board, depth=args.depth, top_n=5)
-                if result.move is None:
+                    legal = " ".join(board.san(m) for m in list(board.legal_moves)[:20])
+                    print(f"Illegal/unrecognized move. Legal examples: {legal}")
+                if aborted or resigned:
                     break
-                print("ai> " + explain_search(before, result))
-                board.push(result.move)
-                played_moves.append(result.move)
+                # If undo returned a position where dog_matist moves first, let loop handle it.
+                continue
+
+            before = board.copy(stack=False)
+            result = searcher.search(board, depth=args.depth, top_n=5)
+            if result.move is None:
+                break
+            print("dog_matist> " + explain_search(before, result))
+            board.push(result.move)
+            played_moves.append(result.move)
+
+        if aborted:
+            return 0
+
+        if resigned:
+            final_result = "0-1" if human == chess.WHITE else "1-0"
+            termination = "human_resignation"
+        else:
+            final_result = board.result(claim_draw=True)
+            outcome = board.outcome(claim_draw=True)
+            termination = outcome.termination.name.lower() if outcome is not None else "completed"
 
         print("\n" + str(board))
-        final_result = board.result(claim_draw=True)
         print("Result:", final_result)
-        outcome = board.outcome(claim_draw=True)
-        termination = outcome.termination.name.lower() if outcome is not None else "completed"
-        generation = int(rt.champion_info()["id"])
-        white_name = "Human" if human == chess.WHITE else f"DarwinChess-g{generation}"
-        black_name = "Human" if human == chess.BLACK else f"DarwinChess-g{generation}"
+        white_name = "Human" if human == chess.WHITE else f"dog_matist-g{generation}"
+        black_name = "Human" if human == chess.BLACK else f"dog_matist-g{generation}"
         rt.memory.add_game(
             source="human",
             generation=generation,
@@ -139,10 +194,10 @@ def cmd_play(args) -> int:
             termination=termination,
             pgn=build_pgn(played_moves, final_result, white_name, black_name, termination),
             plies=len(played_moves),
-            examples=[],  # Remember the encounter without blindly imitating the human.
-            metadata={"human_color": color},
+            examples=[],
+            metadata={"human_color": color, "takebacks": takebacks, "training_replay": False},
         )
-        print("This completed game was added to long-term memory (not training replay).")
+        print("Completed game added to lifetime memory; training replay remains OFF.")
     return 0
 
 
@@ -152,7 +207,7 @@ def cmd_chat(args) -> int:
         if args.message:
             print(agent.answer(" ".join(args.message)))
             return 0
-        print("DarwinChess chat. Type quit to exit.")
+        print("dog_matist chat. Type quit to exit.")
         while True:
             try:
                 q = input("you> ").strip()
@@ -160,7 +215,7 @@ def cmd_chat(args) -> int:
                 break
             if q.lower() in {"quit", "exit", "q"}:
                 break
-            print("darwin> " + agent.answer(q))
+            print("dog_matist> " + agent.answer(q))
     return 0
 
 
@@ -171,6 +226,7 @@ def cmd_export(args) -> int:
         print(json.dumps(paths, ensure_ascii=False, indent=2))
     return 0
 
+
 def cmd_teacher(args) -> int:
     with _runtime(args) as rt:
         result = rt.teacher_distill(args.positions)
@@ -179,7 +235,10 @@ def cmd_teacher(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="darwinchess", description="Persistent self-evolving conversational chess agent")
+    parser = argparse.ArgumentParser(
+        prog="dog-matist",
+        description="Persistent self-evolving conversational chess agent",
+    )
     parser.add_argument("--config", help="YAML override config")
     parser.add_argument("--mode", choices=["eco", "normal", "night"], help="resource mode")
     parser.add_argument("--device", choices=["cpu", "mps", "cuda"], help="force training device")
@@ -203,9 +262,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--cycles", type=int, help="run a fixed number of cycles")
     p.set_defaults(func=cmd_evolve)
 
-    p = sub.add_parser("challenge", help="train a challenger from replay and gate it in arena")
+    p = sub.add_parser("challenge", help="train a challenger from replay and gate it in Arena")
     p.add_argument("--steps", type=int)
-    p.add_argument("--games", type=int, help="arena games")
+    p.add_argument("--games", type=int, help="Arena games")
     p.set_defaults(func=cmd_challenge)
 
     p = sub.add_parser("analyze", help="analyze a position")
@@ -214,12 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=5)
     p.set_defaults(func=cmd_analyze)
 
-    p = sub.add_parser("play", help="play against the current champion")
+    p = sub.add_parser("play", help="play against a pinned snapshot of the current champion")
     p.add_argument("--color", choices=["white", "black", "random"], default="random")
     p.add_argument("--depth", type=int)
     p.set_defaults(func=cmd_play)
 
-    p = sub.add_parser("chat", help="talk to DarwinChess about its real state or positions")
+    p = sub.add_parser("chat", help="talk to dog_matist about its real state or positions")
     p.add_argument("message", nargs="*")
     p.set_defaults(func=cmd_chat)
 
@@ -239,7 +298,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         code = args.func(args)
     except Exception as exc:
-        print(f"DarwinChess error: {exc}", file=sys.stderr)
+        print(f"dog_matist error: {exc}", file=sys.stderr)
         if getattr(args, "command", None) == "doctor":
             raise
         code = 1
