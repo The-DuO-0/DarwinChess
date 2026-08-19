@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QElapsedTimer, QTimer, Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -11,14 +14,17 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
-    QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from ..data import ReadOnlyStore, numeric_series
+from ..widgets.charts import LineChart
+
 
 class EvolutionPage(QWidget):
     STAGES = ["self-play", "training", "arena", "promoted"]
+    _loss_re = re.compile(r"^(\d+)/(\d+).*?loss=([0-9eE+.-]+)")
 
     def __init__(self, process, parent=None):
         super().__init__(parent)
@@ -27,6 +33,13 @@ class EvolutionPage(QWidget):
         self.clock = QTimer(self)
         self.clock.setInterval(1000)
         self.clock.timeout.connect(self._tick)
+        self.store = ReadOnlyStore()
+        self.live_loss_x: list[float] = []
+        self.live_loss_y: list[float] = []
+        self.chart_clock = QTimer(self)
+        self.chart_clock.setInterval(3500)
+        self.chart_clock.timeout.connect(self._reload_charts)
+        self.chart_clock.start()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 24)
@@ -123,6 +136,28 @@ class EvolutionPage(QWidget):
         note.setWordWrap(True)
         root.addWidget(note)
 
+        charts = QFrame()
+        charts.setObjectName("Panel")
+        chart_layout = QVBoxLayout(charts)
+        chart_layout.setContentsMargins(14, 12, 14, 14)
+        chart_head = QHBoxLayout()
+        chart_head.addWidget(QLabel("TRAINING CHARTS"))
+        chart_head.addStretch()
+        self.chart_note = QLabel("SQLite lineage + live trainer telemetry")
+        self.chart_note.setObjectName("Subtle")
+        chart_head.addWidget(self.chart_note)
+        chart_layout.addLayout(chart_head)
+        chart_grid = QGridLayout()
+        chart_grid.setHorizontalSpacing(10)
+        self.live_loss_chart = LineChart("CURRENT RUN · TRAINING LOSS")
+        self.gen_loss_chart = LineChart("LINEAGE · TRAINING LOSS")
+        self.arena_chart = LineChart("LINEAGE · ARENA SCORE", percent=True)
+        chart_grid.addWidget(self.live_loss_chart, 0, 0)
+        chart_grid.addWidget(self.gen_loss_chart, 0, 1)
+        chart_grid.addWidget(self.arena_chart, 0, 2)
+        chart_layout.addLayout(chart_grid)
+        root.addWidget(charts)
+
         root.addWidget(QLabel("Live process log"))
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -137,6 +172,7 @@ class EvolutionPage(QWidget):
         self.process.state_changed.connect(self._running_changed)
         self.process.stage_changed.connect(self._stage_changed)
         self._running_changed(self.process.running)
+        QTimer.singleShot(250, self._reload_charts)
 
     def _start(self):
         ok = self.process.start_evolution(self.mode.currentText(), self.cycles.value(), self.hours.value())
@@ -153,6 +189,9 @@ class EvolutionPage(QWidget):
     def _started(self, label: str):
         self.elapsed.start()
         self.clock.start()
+        self.live_loss_x.clear()
+        self.live_loss_y.clear()
+        self.live_loss_chart.clear()
         self.status.setText(f"● RUNNING · {label}")
         self.status.setProperty("active", True)
         self._restyle(self.status)
@@ -167,6 +206,7 @@ class EvolutionPage(QWidget):
         self.detail.setText("Safe boundary reached." if code == 0 else "Check the final log lines for details.")
         self.progress.setVisible(False)
         self._highlight(None)
+        self._reload_charts()
 
     def _tick(self):
         if not self.elapsed.isValid():
@@ -182,6 +222,16 @@ class EvolutionPage(QWidget):
         self.stage_title.setText(label)
         self.detail.setText(detail or self._stage_explanation(stage))
         self._highlight(stage)
+
+        if stage == "training" and detail:
+            match = self._loss_re.search(detail)
+            if match:
+                step = float(match.group(1))
+                loss = float(match.group(3))
+                self.live_loss_x.append(step)
+                self.live_loss_y.append(loss)
+                self.live_loss_chart.set_series(self.live_loss_x, self.live_loss_y)
+
         if detail and "/" in detail:
             try:
                 token = detail.split()[0]
@@ -195,6 +245,25 @@ class EvolutionPage(QWidget):
             self.progress.setVisible(stage not in ("idle", "promoted", "rejected"))
             if self.progress.isVisible():
                 self.progress.setRange(0, 0)
+
+        if stage in {"arena", "promoted", "rejected"}:
+            self._reload_charts()
+
+    def _reload_charts(self):
+        try:
+            generations = self.store.generations(limit=500)
+        except Exception as exc:
+            self.chart_note.setText(f"Chart data unavailable: {exc}")
+            return
+
+        gx, gl = numeric_series(generations, ("id", "generation"), ("training_loss",))
+        ax, ar = numeric_series(generations, ("id", "generation"), ("arena_score",))
+        self.gen_loss_chart.set_series(gx, gl)
+        self.arena_chart.set_series(ax, ar, threshold=0.55)
+        if generations:
+            self.chart_note.setText(f"{len(generations)} generations in lifetime SQLite")
+        else:
+            self.chart_note.setText("Waiting for generation history")
 
     def _stage_explanation(self, stage: str) -> str:
         return {
