@@ -1,6 +1,7 @@
 import chess
 
-from opening_curriculum import CURATED_OPENINGS, OpeningCurriculum, validate_curriculum
+from darwinchess.opening_curriculum import CURATED_OPENINGS, OpeningCurriculum, validate_curriculum
+from darwinchess.selfplay import _sample_selfplay_opening
 
 
 def test_curated_openings_are_legal_and_distinct():
@@ -24,3 +25,20 @@ def test_sampling_has_multiple_families():
     assert "standard" in families
     assert "controlled_random" in families
     assert len(families) >= 4
+
+
+def test_selfplay_uses_configurable_curriculum():
+    config = {
+        "selfplay": {
+            "opening_curriculum": {
+                "enabled": True,
+                "standard": 0.0,
+                "curated": 1.0,
+                "uncommon": 0.0,
+                "controlled_random": 0.0,
+            }
+        }
+    }
+    starts = [_sample_selfplay_opening(config, seed=i) for i in range(20)]
+    assert all(family != "standard" for _board, _name, family in starts)
+    assert len({name for _board, name, _family in starts}) >= 5
