@@ -30,11 +30,12 @@ class DarwinRuntime:
     def __init__(
         self, config_path: str | Path | None = None, *, mode: str | None = None,
         device: str | None = None, search_device: str | None = None,
+        apply_nice: bool = True,
     ):
         base = load_config(config_path)
         mode = mode or base["resources"].get("default_mode", "normal")
         self.config = apply_mode(base, mode)
-        configure_runtime(self.config)
+        configure_runtime(self.config, apply_nice=apply_nice)
         seed_everything(int(self.config["project"].get("seed", 0)))
         self.paths = ensure_state_dirs(self.config)
         self.memory = MemoryStore(self.paths["db"])
@@ -60,9 +61,6 @@ class DarwinRuntime:
         champion = self.memory.champion_generation()
         if champion is not None:
             if Path(champion["checkpoint_path"]).exists():
-                # Important for Studio 2.0 concurrency: merely opening another
-                # runtime (Play, status, Conversation) must never mutate an
-                # in-flight challenger owned by an Evolution process.
                 return
             raise RuntimeError(
                 f"Champion checkpoint is missing: {champion['checkpoint_path']}. "
