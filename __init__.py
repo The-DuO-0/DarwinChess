@@ -1,2 +1,3 @@
-"""dog_matist Studio desktop GUI."""
-__version__ = "2.0.0-dev"
+"""DarwinChess: a persistent self-evolving conversational chess agent."""
+
+__version__ = "1.0.0"
