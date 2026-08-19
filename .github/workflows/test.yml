@@ -5,6 +5,10 @@ on:
     branches: [dog-matist-v2]
   pull_request:
 
+concurrency:
+  group: dog-matist-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
