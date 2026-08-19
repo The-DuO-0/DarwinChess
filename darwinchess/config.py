@@ -101,11 +101,19 @@ def choose_device(prefer_accelerator: bool = True) -> torch.device:
     return torch.device("cpu")
 
 
-def configure_runtime(config: dict[str, Any]) -> None:
+def configure_runtime(config: dict[str, Any], *, apply_nice: bool = True) -> None:
+    """Apply process-wide compute settings.
+
+    Thread limits are useful for every runtime. POSIX niceness is deliberately
+    optional because it affects the whole process: Studio/Play should remain
+    interactive, while heavy Evolution worker processes may yield CPU priority.
+    """
     runtime = config.get("runtime", {})
     threads = int(runtime.get("torch_threads", 0) or 0)
     if threads > 0:
         torch.set_num_threads(threads)
+    if not apply_nice:
+        return
     nice = int(runtime.get("nice", 0) or 0)
     if nice > 0 and hasattr(os, "nice"):
         try:
