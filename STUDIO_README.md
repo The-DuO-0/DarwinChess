@@ -1,61 +1,54 @@
-# DarwinChess Studio 1.0
+# dog_matist Studio 2.0
 
-Desktop UI add-on for the existing DarwinChess 1.0 project. It deliberately does **not** replace or copy the chess brain, SQLite database, replay memory, checkpoints, or champion selection logic.
+Desktop UI for the persistent dog_matist chess agent. Studio uses the same learned lifetime state at `~/.darwinchess`; it does not reset or copy the champion lineage.
 
-## Install on the Mac
+## Install / upgrade on macOS
 
-1. Unzip this package.
-2. Copy `studio/`, `install_studio.command`, and `run_studio.command` into the existing **DarwinChess-1.0 project folder** (the folder that already contains `.venv`, `setup_mac.sh`, etc.).
-3. Double-click `install_studio.command` once. macOS may ask you to allow the script in Privacy & Security.
-4. Double-click `run_studio.command` whenever you want the GUI.
-
-Terminal equivalent:
+From the dog_matist 2.0 project folder:
 
 ```bash
-cd /path/to/DarwinChess-1.0
-./install_studio.command
+./setup_mac.sh
 ./run_studio.command
 ```
 
-## What is wired to the real system
+`setup_mac.sh` refuses to upgrade while Evolution is active, backs up the existing SQLite lifetime database, installs core + Studio dependencies, runs tests, performs a headless Studio import check, and runs the hardware/state doctor.
 
-- **Play Champion** uses `DarwinChessAgent.best_move(fen)`; there is no dummy move generator.
-- **Dashboard** uses `DarwinChessAgent.status()`.
-- **Conversation** uses `DarwinChessAgent.talk()`.
-- **Evolution** launches the existing `darwinchess --mode ... evolve`, `challenge`, `selfplay`, and `export` commands.
-- **Stop safely** sends SIGINT on macOS so the existing safe-boundary behavior is used.
-- **Research** reads the existing SQLite database in read-only mode and discovers generation/metric tables without changing them.
-- Human-vs-champion PGNs are saved to `~/.darwinchess/studio_games/`. Studio never inserts those games into replay automatically.
+## Play
 
-## UI areas
+The Play page uses the real champion. A new game first **pins one exact champion generation/checkpoint**. Background Evolution can continue; a promotion only changes the opponent for the next game.
 
-### Dashboard
-Current champion generation, lifetime game/replay counts (when exposed by `status()`), raw status view, DB location, and process state.
+The graphical board provides legal-move highlighting, last-move/check highlighting, board flip, full-turn undo, resign, abort-without-saving, and local move/capture/check/end sounds.
 
-### Play Champion
-Clickable chessboard, white/black selection, board flip, legal-move highlighting, promotion chooser, move history, FEN, AI-thinking lockout, check highlighting, resign/new game, and PGN saving.
+Completed games are saved to:
 
-### Evolution
-Resource profile (`eco`, `normal`, `night`), cycle/hour runs, safe stop, one-off challenge, self-play generation, export, live stdout, and an automatically highlighted Self-play → Train → Arena → Promote/Reject pipeline.
-
-### Research & lineage
-Read-only generations/metrics tables, database table counts, training-loss chart, Arena-score chart, and export button. The DB adapter is deliberately schema-tolerant so it can survive modest backend evolution.
-
-### Conversation
-A desktop chat panel directly connected to DarwinChess's language layer.
-
-## Data safety
-
-Studio does not contain reset/delete buttons. It never deletes `~/.darwinchess`, never writes over champion checkpoints, and never changes promotion rules. Training continues to use DarwinChess's existing held-out Arena and atomic champion switch.
-
-## If the window cannot find DarwinChess
-
-Run from the project venv:
-
-```bash
-source .venv/bin/activate
-darwinchess doctor
-python -m studio
+```text
+~/.darwinchess/studio_games/
 ```
 
-If `darwinchess doctor` works, Studio should use the same install and state directory.
+and to lifetime SQLite memory as `source=human`. Human games add **zero training replay examples**. Abort writes neither PGN nor a completed-game record.
+
+## Evolution
+
+Evolution shows explicit runtime stages:
+
+```text
+SELF-PLAY → TRAINING → ARENA → PROMOTE / REJECT
+```
+
+The Current Run card reports progress and elapsed time. Self-play uses the opening curriculum; Arena evaluates color-swapped pairs from the same opening position.
+
+Only one Evolution/Challenge/replay-writing process may own the single-writer lock. Play, status, and conversation remain available while Evolution runs. Interactive Studio search keeps normal process scheduling priority; heavy background Evolution yields CPU priority according to the selected resource profile.
+
+`Stop safely` sends the worker an interrupt so already committed lifetime state and the active champion are not replaced by an unproven partial candidate.
+
+## Research
+
+Research reads the same SQLite state and export directory. Arena games remain held out from training replay. Human games are visible as lifetime encounters but also remain outside replay unless a future feature explicitly opts them in.
+
+## Conversation
+
+Conversation uses the same embedded `DogMatistAgent` and can inspect the agent's real persistent status. The legacy `DarwinChessAgent` class remains an API compatibility alias during the 1.x → 2.0 migration.
+
+## Safety rule during migration
+
+Do not run the old DarwinChess 1.x Evolution loop and dog_matist 2.0 Evolution at the same time. Stop the old evolution process before running `setup_mac.sh`. The 2.0 installer checks for this automatically.
