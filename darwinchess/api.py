@@ -9,10 +9,12 @@ from .runtime import DarwinRuntime
 
 
 class DarwinChessAgent:
-    """Stable programmatic boundary for embedding DarwinChess in a larger agent.
+    """Stable programmatic boundary for embedding dog_matist in a larger agent.
 
-    The outer agent does not need to know about PyTorch, SQLite, search, replay,
-    or champion lineage. It can treat this as a persistent tool/skill.
+    The public class name stays compatible with DarwinChess 1.x, while the
+    runtime/project identity is dog_matist. A human game can pin one champion
+    snapshot so a promotion in another process never changes the opponent
+    halfway through the game.
     """
 
     def __init__(
@@ -30,8 +32,11 @@ class DarwinChessAgent:
             search_device=search_device,
         )
         self.dialogue = DialogueAgent(self.runtime)
+        self._game_searcher = None
+        self._game_generation: int | None = None
 
     def close(self) -> None:
+        self.end_game()
         self.runtime.close()
 
     def __enter__(self) -> "DarwinChessAgent":
@@ -41,17 +46,46 @@ class DarwinChessAgent:
         self.close()
 
     def status(self) -> dict[str, Any]:
-        return self.runtime.status()
+        status = self.runtime.status()
+        status["pinned_game_generation"] = self._game_generation
+        return status
+
+    def begin_game(self) -> dict[str, Any]:
+        """Pin the current champion for a complete human game."""
+        champion = self.runtime.champion_info()
+        generation = int(champion["id"])
+        model, payload = self.runtime.load_champion(self.runtime.search_device)
+        genome = self.runtime.genome_from_payload(payload)
+        self._game_searcher = self.runtime.make_searcher(
+            model,
+            genome=genome,
+            device=self.runtime.search_device,
+        )
+        self._game_generation = generation
+        return {
+            "generation": generation,
+            "checkpoint": champion["checkpoint_path"],
+        }
+
+    def end_game(self) -> None:
+        self._game_searcher = None
+        self._game_generation = None
 
     def best_move(self, fen: str, *, depth: int | None = None) -> dict[str, Any]:
         board = chess.Board(fen)
-        result = self.runtime.analyze(fen, depth=depth, top_n=5)
+        if self._game_searcher is not None:
+            result = self._game_searcher.search(board, depth=depth, top_n=5)
+            generation = self._game_generation
+        else:
+            result = self.runtime.analyze(fen, depth=depth, top_n=5)
+            generation = int(self.runtime.champion_info()["id"])
         if result.move is None:
             return {
                 "move_uci": None,
                 "move_san": None,
                 "score_cp": result.score_cp,
                 "terminal": True,
+                "generation": generation,
                 "explanation": explain_search(board, result),
             }
         return {
@@ -66,6 +100,7 @@ class DarwinChessAgent:
                 for c in result.candidates
             ],
             "terminal": False,
+            "generation": generation,
             "explanation": explain_search(board, result),
         }
 
@@ -73,12 +108,14 @@ class DarwinChessAgent:
         return self.dialogue.answer(message)
 
     def chat(self, message: str) -> str:
-        """Alias for outer agents that expose a chat-style tool name."""
         return self.talk(message)
 
     def evolve_once(self) -> dict[str, Any]:
         return self.runtime.evolve_cycle()
 
     def remember_status(self) -> dict[str, Any]:
-        """Alias useful for tool-based outer agents that distinguish memory calls."""
-        return self.runtime.status()
+        return self.status()
+
+
+# Preferred v2 name while retaining source compatibility for existing agents.
+DogMatistAgent = DarwinChessAgent
