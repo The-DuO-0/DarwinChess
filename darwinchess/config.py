@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import copy
@@ -60,8 +59,15 @@ def apply_mode(config: dict[str, Any], mode: str) -> dict[str, Any]:
     return cfg
 
 
+def state_root(config: dict[str, Any]) -> Path:
+    override = os.environ.get("DARWINCHESS_HOME") or os.environ.get("DARWINCHESS_STATE_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path(config["project"]["state_dir"]).expanduser()
+
+
 def state_paths(config: dict[str, Any]) -> dict[str, Path]:
-    root = Path(config["project"]["state_dir"]).expanduser()
+    root = state_root(config)
     return {
         "root": root,
         "db": root / "darwinchess.sqlite3",
@@ -84,8 +90,6 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.backends.mps.is_available():
-        # MPS has no separate manual_seed requirement in current PyTorch,
-        # torch.manual_seed seeds supported devices.
         pass
 
 
