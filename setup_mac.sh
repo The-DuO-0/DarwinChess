@@ -15,9 +15,17 @@ if sys.version_info < (3, 11):
 print("Python", sys.version.split()[0])
 PY
 
-# Do not replace code while an old/new Evolution process is actively writing
-# the same lifetime state. Play/status do not own this lock and do not block an
-# upgrade once Evolution has been stopped safely.
+# DarwinChess 1.x did not have the v2 lock file. Detect its evolution command
+# as well, otherwise an upgrade could happen while the old process is writing.
+if command -v pgrep >/dev/null 2>&1; then
+  if pgrep -f 'darwinchess.*evolve|dog-matist.*evolve' >/dev/null 2>&1; then
+    echo "An Evolution process is still running. Use Stop safely first, then rerun setup_mac.sh."
+    exit 2
+  fi
+fi
+
+# v2 single-writer lock check. Play/status do not own this lock and therefore
+# can coexist with Evolution during normal use.
 "$PYTHON_BIN" - <<'PY'
 from pathlib import Path
 import os
