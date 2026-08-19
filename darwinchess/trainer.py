@@ -44,8 +44,6 @@ class ContinualTrainer:
             try:
                 self.optimizer.load_state_dict(optimizer_state)
             except (ValueError, KeyError):
-                # Architecture migrations may intentionally invalidate moments;
-                # weights still continue from the champion even if moments reset.
                 pass
 
     def train(self, steps: int | None = None) -> TrainingStats:
@@ -57,13 +55,15 @@ class ContinualTrainer:
         policy_weight = float(tcfg.get("policy_loss_weight", 0.35))
         grad_clip = float(tcfg.get("gradient_clip", 1.0))
 
+        print(f"[dog_matist][stage=training][detail=0/{steps}]", flush=True)
         self.model.to(self.device)
         self.model.train()
         total_loss = total_v = total_p = 0.0
         used = 0
         completed = 0
+        report_every = max(1, steps // 20)
 
-        for _ in range(steps):
+        for step in range(steps):
             rows = self.memory.replay_sample(batch_size, recent_fraction)
             if not rows:
                 break
@@ -115,6 +115,8 @@ class ContinualTrainer:
             total_p += float(ploss.detach().cpu())
             used += len(boards)
             completed += 1
+            if completed == 1 or completed % report_every == 0 or completed == steps:
+                print(f"[dog_matist][stage=training][detail={completed}/{steps}]", flush=True)
 
         self.model.eval()
         denom = max(1, completed)
