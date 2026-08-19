@@ -104,6 +104,46 @@ class DarwinChessAgent:
             "explanation": explain_search(board, result),
         }
 
+    def record_human_game(
+        self,
+        *,
+        pgn: str,
+        result: str,
+        termination: str,
+        plies: int,
+        human_color: str,
+        takebacks: int = 0,
+        generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Remember a completed human encounter without adding replay examples."""
+        if human_color not in {"white", "black"}:
+            raise ValueError("human_color must be 'white' or 'black'")
+        if generation is None:
+            generation = self._game_generation
+        if generation is None:
+            generation = int(self.runtime.champion_info()["id"])
+        dog = f"dog_matist-g{generation}"
+        white_agent = "Human" if human_color == "white" else dog
+        black_agent = dog if human_color == "white" else "Human"
+        gid = self.runtime.memory.add_game(
+            source="human",
+            generation=int(generation),
+            white_agent=white_agent,
+            black_agent=black_agent,
+            result=result,
+            termination=termination,
+            pgn=pgn,
+            plies=int(plies),
+            examples=[],
+            metadata={
+                "human_color": human_color,
+                "takebacks": int(takebacks),
+                "training_replay": False,
+                "studio": True,
+            },
+        )
+        return {"game_id": gid, "generation": int(generation), "training_replay": False}
+
     def talk(self, message: str) -> str:
         return self.dialogue.answer(message)
 
