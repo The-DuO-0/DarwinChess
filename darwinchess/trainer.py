@@ -116,7 +116,11 @@ class ContinualTrainer:
             used += len(boards)
             completed += 1
             if completed == 1 or completed % report_every == 0 or completed == steps:
-                print(f"[dog_matist][stage=training][detail={completed}/{steps}]", flush=True)
+                running_loss = total_loss / max(1, completed)
+                print(
+                    f"[dog_matist][stage=training][detail={completed}/{steps} loss={running_loss:.5f}]",
+                    flush=True,
+                )
 
         self.model.eval()
         denom = max(1, completed)
