@@ -11,6 +11,7 @@ import chess
 from .dialogue import DialogueAgent, explain_search
 from .exporter import export_research_bundle
 from .locks import EvolutionLock
+from .network import load_checkpoint
 from .runtime import DarwinRuntime
 from .selfplay import build_pgn
 
@@ -57,8 +58,6 @@ def cmd_evolve(args) -> int:
 
 def cmd_challenge(args) -> int:
     with _runtime(args) as rt:
-        # challenge mutates the same lineage as evolve; it must obey the same
-        # single-writer rule. Human play/status intentionally do not take this lock.
         with EvolutionLock(rt.paths["root"]):
             rt._retire_stale_challengers()
             trained = rt.train_challenger(args.steps)
@@ -96,11 +95,11 @@ def _parse_move(board: chess.Board, text: str) -> chess.Move | None:
 
 def cmd_play(args) -> int:
     with _runtime(args) as rt:
-        # Pin the opponent at game start. Even if a separate Evolution process
-        # promotes a new champion, this game keeps the original model/generation.
         champion = rt.champion_info()
         generation = int(champion["id"])
-        model, payload = rt.load_champion(rt.search_device)
+        checkpoint = str(champion["checkpoint_path"])
+        # Load the exact row we pinned; do not re-query current champion here.
+        model, payload = load_checkpoint(checkpoint, rt.search_device)
         genome = rt.genome_from_payload(payload)
         searcher = rt.make_searcher(model, genome=genome, device=rt.search_device)
 
@@ -138,7 +137,6 @@ def cmd_play(args) -> int:
                         if not played_moves:
                             print("Nothing to undo.")
                             continue
-                        # Remove one full turn where possible and return the move to the human.
                         popped = 0
                         while board.move_stack and popped < 2:
                             board.pop()
@@ -159,7 +157,6 @@ def cmd_play(args) -> int:
                     print(f"Illegal/unrecognized move. Legal examples: {legal}")
                 if aborted or resigned:
                     break
-                # If undo returned a position where dog_matist moves first, let loop handle it.
                 continue
 
             before = board.copy(stack=False)
