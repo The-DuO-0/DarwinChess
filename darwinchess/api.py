@@ -5,6 +5,7 @@ from typing import Any
 import chess
 
 from .dialogue import DialogueAgent, explain_search
+from .network import load_checkpoint
 from .runtime import DarwinRuntime
 
 
@@ -12,9 +13,9 @@ class DarwinChessAgent:
     """Stable programmatic boundary for embedding dog_matist in a larger agent.
 
     The public class name stays compatible with DarwinChess 1.x, while the
-    runtime/project identity is dog_matist. A human game can pin one champion
-    snapshot so a promotion in another process never changes the opponent
-    halfway through the game.
+    runtime/project identity is dog_matist. A human game pins one immutable
+    champion snapshot so a promotion in another process never changes the
+    opponent halfway through the game.
     """
 
     def __init__(
@@ -51,10 +52,14 @@ class DarwinChessAgent:
         return status
 
     def begin_game(self) -> dict[str, Any]:
-        """Pin the current champion for a complete human game."""
+        """Pin one generation/checkpoint pair for the complete human game."""
         champion = self.runtime.champion_info()
         generation = int(champion["id"])
-        model, payload = self.runtime.load_champion(self.runtime.search_device)
+        checkpoint = str(champion["checkpoint_path"])
+        # Load exactly the checkpoint from the row we just pinned. Do not call
+        # load_champion() here: another process may promote a successor between
+        # two independent champion queries.
+        model, payload = load_checkpoint(checkpoint, self.runtime.search_device)
         genome = self.runtime.genome_from_payload(payload)
         self._game_searcher = self.runtime.make_searcher(
             model,
@@ -62,10 +67,7 @@ class DarwinChessAgent:
             device=self.runtime.search_device,
         )
         self._game_generation = generation
-        return {
-            "generation": generation,
-            "checkpoint": champion["checkpoint_path"],
-        }
+        return {"generation": generation, "checkpoint": checkpoint}
 
     def end_game(self) -> None:
         self._game_searcher = None
