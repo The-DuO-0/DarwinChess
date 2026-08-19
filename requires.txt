@@ -1,7 +1,0 @@
-chess==1.11.2
-numpy>=1.26
-torch>=2.3
-PyYAML>=6.0
-
-[dev]
-pytest>=8
