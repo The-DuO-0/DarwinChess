@@ -1,6 +1,12 @@
-"""DogMatist v2: population/league evolution primitives."""
+"""DogMatist v2: population/league/OpenTree evolution primitives."""
 
 from .league import Candidate, MatchResult, LeagueTable, select_survivors
+from .opentree_policy import (
+    CurriculumMix,
+    OpenTreeCurriculumController,
+    OpenTreePolicy,
+    TreeHealth,
+)
 from .resource import ResourceBudget, ResourceController, ResourceSample
 from .specialists import OpeningBucket, SpecialistArchive, SpecialistRecord
 
@@ -9,6 +15,10 @@ __all__ = [
     "MatchResult",
     "LeagueTable",
     "select_survivors",
+    "CurriculumMix",
+    "OpenTreeCurriculumController",
+    "OpenTreePolicy",
+    "TreeHealth",
     "ResourceBudget",
     "ResourceController",
     "ResourceSample",
