@@ -6,6 +6,7 @@ from enum import Enum
 
 from .runtime import ComputeBudgetClock, LeaguePairScheduler
 from .strength_lab import StrengthLabPlan
+from .strength_pipeline import StrengthRoundRecipe
 
 
 class EvolutionStage(str, Enum):
@@ -90,20 +91,34 @@ def build_evolution_flow_snapshot(
     clock: ComputeBudgetClock,
     league: LeaguePairScheduler | None = None,
     strength_lab_plan: StrengthLabPlan | None = None,
+    strength_recipe: StrengthRoundRecipe | None = None,
 ) -> EvolutionFlowSnapshot:
     league_snapshot = league.snapshot() if league is not None else None
     strength_snapshot = strength_lab_plan.ui_payload() if strength_lab_plan is not None else None
+    if strength_snapshot is not None and strength_recipe is not None:
+        strength_snapshot = dict(strength_snapshot)
+        strength_snapshot["recipe"] = strength_recipe.ui_payload()
+
     if league is not None and league.draining:
         status = "Compute budget reached — finishing the current colour pair(s), then stopping safely."
     elif stage is EvolutionStage.LEAGUE and league is not None:
         active = len(league.active_games)
         status = f"League running: {active}/{league.parallel_games} games active."
     elif stage is EvolutionStage.STRENGTH_LAB and strength_lab_plan is not None:
-        status = (
-            f"Strength Lab: {strength_lab_plan.mode.value} mode; "
-            f"deep-search teacher {strength_lab_plan.teacher_search_multiplier:.1f}x on "
-            f"{strength_lab_plan.teacher_fraction:.0%} of selected hard positions."
-        )
+        if strength_recipe is not None:
+            effective = strength_recipe.ui_payload()["effective"]
+            status = (
+                f"Strength Lab: {strength_lab_plan.mode.value} mode; "
+                f"hard {effective['hard_positions']}, specialist {effective['specialist_sparring']}, "
+                f"teacher {effective['deep_search_teacher']} at "
+                f"{strength_lab_plan.teacher_search_multiplier:.1f}x search."
+            )
+        else:
+            status = (
+                f"Strength Lab: {strength_lab_plan.mode.value} mode; "
+                f"deep-search teacher {strength_lab_plan.teacher_search_multiplier:.1f}x on "
+                f"{strength_lab_plan.teacher_fraction:.0%} of selected hard positions."
+            )
     elif stage is EvolutionStage.COMPLETE:
         status = "Run complete."
     else:
