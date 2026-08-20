@@ -33,6 +33,18 @@ class OpenTreeRoundTrace:
     policy_trial_status: str = "baseline"
     policy_trial_id: int | None = None
     policy_reason: str = ""
+    champion_generation: int = 0
+    candidate_generation: int | None = None
+    arena_wins: int = 0
+    arena_draws: int = 0
+    arena_losses: int = 0
+    training_loss: float | None = None
+    policy_natural: float = 0.45
+    policy_frontier: float = 0.30
+    policy_specialist: float = 0.15
+    policy_anchor: float = 0.10
+    promotion_action: str = "none"
+    elapsed_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if self.round_id < 0:
@@ -70,6 +82,30 @@ class OpenTreeRoundTrace:
             raise ValueError("invalid policy_trial_status")
         if self.policy_trial_id is not None and self.policy_trial_id < 1:
             raise ValueError("policy_trial_id must be positive when present")
+        if self.champion_generation < 0:
+            raise ValueError("champion_generation must be non-negative")
+        if self.candidate_generation is not None and self.candidate_generation < 0:
+            raise ValueError("candidate_generation must be non-negative when present")
+        if any(v < 0 for v in (self.arena_wins, self.arena_draws, self.arena_losses)):
+            raise ValueError("arena W/D/L must be non-negative")
+        if self.training_loss is not None and (
+            not isfinite(self.training_loss) or self.training_loss < 0.0
+        ):
+            raise ValueError("training_loss must be finite and non-negative when present")
+        policy_values = (
+            self.policy_natural,
+            self.policy_frontier,
+            self.policy_specialist,
+            self.policy_anchor,
+        )
+        if any((not isfinite(v) or v < 0.0) for v in policy_values):
+            raise ValueError("policy mix must be finite and non-negative")
+        if abs(sum(policy_values) - 1.0) > 1e-6:
+            raise ValueError("policy mix must sum to 1")
+        if self.promotion_action not in {"none", "promote", "reject", "defer"}:
+            raise ValueError("invalid promotion_action")
+        if not isfinite(self.elapsed_seconds) or self.elapsed_seconds < 0.0:
+            raise ValueError("elapsed_seconds must be finite and non-negative")
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"), sort_keys=True)
