@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .runtime import ComputeBudgetClock, LeaguePairScheduler
+from .strength_lab import StrengthLabPlan
 
 
 class EvolutionStage(str, Enum):
     SELF_PLAY = "self_play"
+    STRENGTH_LAB = "strength_lab"
     POPULATION_TRAIN = "population_train"
     LEAGUE = "league"
     ARENA = "arena"
@@ -21,6 +23,7 @@ class EvolutionStage(str, Enum):
 
 _STAGE_LABELS: tuple[tuple[EvolutionStage, str], ...] = (
     (EvolutionStage.SELF_PLAY, "Self-play"),
+    (EvolutionStage.STRENGTH_LAB, "Strength Lab · hard positions + deep-search teacher"),
     (EvolutionStage.POPULATION_TRAIN, "Population train"),
     (EvolutionStage.LEAGUE, "League · 2–3 parallel games"),
     (EvolutionStage.ARENA, "Arena"),
@@ -38,6 +41,7 @@ class EvolutionFlowSnapshot:
     compute: dict[str, float | bool]
     flow: tuple[dict[str, str], ...]
     league: dict[str, object] | None
+    strength_lab: dict[str, object] | None
     status_text: str
 
     def as_dict(self) -> dict[str, object]:
@@ -47,6 +51,7 @@ class EvolutionFlowSnapshot:
             "compute": self.compute,
             "flow": list(self.flow),
             "league": self.league,
+            "strength_lab": self.strength_lab,
             "status_text": self.status_text,
         }
 
@@ -84,13 +89,21 @@ def build_evolution_flow_snapshot(
     stage: EvolutionStage,
     clock: ComputeBudgetClock,
     league: LeaguePairScheduler | None = None,
+    strength_lab_plan: StrengthLabPlan | None = None,
 ) -> EvolutionFlowSnapshot:
     league_snapshot = league.snapshot() if league is not None else None
+    strength_snapshot = strength_lab_plan.ui_payload() if strength_lab_plan is not None else None
     if league is not None and league.draining:
         status = "Compute budget reached — finishing the current colour pair(s), then stopping safely."
     elif stage is EvolutionStage.LEAGUE and league is not None:
         active = len(league.active_games)
         status = f"League running: {active}/{league.parallel_games} games active."
+    elif stage is EvolutionStage.STRENGTH_LAB and strength_lab_plan is not None:
+        status = (
+            f"Strength Lab: {strength_lab_plan.mode.value} mode; "
+            f"deep-search teacher {strength_lab_plan.teacher_search_multiplier:.1f}x on "
+            f"{strength_lab_plan.teacher_fraction:.0%} of selected hard positions."
+        )
     elif stage is EvolutionStage.COMPLETE:
         status = "Run complete."
     else:
@@ -103,15 +116,11 @@ def build_evolution_flow_snapshot(
         compute=clock.snapshot(),
         flow=_flow_rows(stage),
         league=league_snapshot,
+        strength_lab=strength_snapshot,
         status_text=status,
     )
 
 
 def encode_ui_event(snapshot: EvolutionFlowSnapshot) -> str:
-    """One-line stdout protocol consumed by the Studio Evolution page.
-
-    Keeping the payload on a dedicated prefix makes the UI parser robust to
-    ordinary training logs and allows older CLI runs to ignore the event.
-    """
-
+    """One-line stdout protocol consumed by the Studio Evolution page."""
     return "DOGMATIST_UI " + snapshot.to_json()
