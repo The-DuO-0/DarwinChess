@@ -33,6 +33,27 @@ class StrengthCurriculumMix:
 
 
 @dataclass(frozen=True)
+class TrainingBatchBudget:
+    natural_selfplay: int
+    hard_positions: int
+    specialist_sparring: int
+    deep_search_teacher: int
+
+    @property
+    def total(self) -> int:
+        return self.natural_selfplay + self.hard_positions + self.specialist_sparring + self.deep_search_teacher
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "natural_selfplay": self.natural_selfplay,
+            "hard_positions": self.hard_positions,
+            "specialist_sparring": self.specialist_sparring,
+            "deep_search_teacher": self.deep_search_teacher,
+            "total": self.total,
+        }
+
+
+@dataclass(frozen=True)
 class StrengthLabPlan:
     mode: StrengthMode
     curriculum: StrengthCurriculumMix
@@ -40,8 +61,40 @@ class StrengthLabPlan:
     teacher_search_multiplier: float
     reason: str
 
-    def ui_payload(self) -> dict[str, object]:
-        return {
+    def batch_budget(self, total_examples: int) -> TrainingBatchBudget:
+        """Turn fractional curriculum weights into exact integer quotas.
+
+        Largest-remainder allocation keeps the sum exact and deterministic. The
+        production trainer can therefore ask for N examples and receive a concrete
+        recipe instead of a descriptive percentage that drifts over time.
+        """
+        if total_examples <= 0:
+            raise ValueError("total_examples must be positive")
+        weights = (
+            ("natural_selfplay", self.curriculum.natural_selfplay),
+            ("hard_positions", self.curriculum.hard_positions),
+            ("specialist_sparring", self.curriculum.specialist_sparring),
+            ("deep_search_teacher", self.curriculum.deep_search_teacher),
+        )
+        raw = [(name, total_examples * weight) for name, weight in weights]
+        counts = {name: int(value) for name, value in raw}
+        left = total_examples - sum(counts.values())
+        remainder_order = sorted(
+            raw,
+            key=lambda item: (item[1] - int(item[1]), item[1]),
+            reverse=True,
+        )
+        for index in range(left):
+            counts[remainder_order[index % len(remainder_order)][0]] += 1
+        return TrainingBatchBudget(
+            natural_selfplay=counts["natural_selfplay"],
+            hard_positions=counts["hard_positions"],
+            specialist_sparring=counts["specialist_sparring"],
+            deep_search_teacher=counts["deep_search_teacher"],
+        )
+
+    def ui_payload(self, *, total_examples: int | None = None) -> dict[str, object]:
+        payload: dict[str, object] = {
             "phase": "strength_lab",
             "mode": self.mode.value,
             "reason": self.reason,
@@ -54,6 +107,9 @@ class StrengthLabPlan:
                 "deep_search_teacher": self.curriculum.deep_search_teacher,
             },
         }
+        if total_examples is not None:
+            payload["batch_budget"] = self.batch_budget(total_examples).as_dict()
+        return payload
 
 
 class PlateauDetector:
