@@ -11,6 +11,10 @@ class TrialEvidence:
     Strength is deliberately measured by paired held-out chess evaluation, not
     by training loss. Diversity metrics are secondary objectives: a prettier
     tree is not allowed to justify a material strength regression.
+
+    `reference_id` identifies the fixed opponent/reference used for the Arena
+    score. Baseline and trial evidence must use the same reference; otherwise a
+    score delta is not interpretable as curriculum evidence.
     """
 
     arena_score: float
@@ -18,14 +22,19 @@ class TrialEvidence:
     effective_branches: float
     viable_frontier: int
     collapse_warning: bool = False
+    reference_id: str = "champion"
 
     def __post_init__(self) -> None:
         if not isfinite(self.arena_score) or not 0.0 <= self.arena_score <= 1.0:
             raise ValueError("arena_score must be in [0, 1]")
         if self.arena_games < 0 or self.viable_frontier < 0:
             raise ValueError("counts must be non-negative")
+        if self.arena_games % 2 != 0:
+            raise ValueError("paired Arena evidence must contain an even number of games")
         if not isfinite(self.effective_branches) or self.effective_branches < 0.0:
             raise ValueError("effective_branches must be finite and non-negative")
+        if not self.reference_id:
+            raise ValueError("reference_id must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -58,8 +67,8 @@ class OpenTreeStrengthGuard:
         minimum_diversity_gain: float = 0.05,
         frontier_gain_weight: float = 0.002,
     ) -> None:
-        if minimum_games < 2:
-            raise ValueError("minimum_games must be >= 2")
+        if minimum_games < 2 or minimum_games % 2 != 0:
+            raise ValueError("minimum_games must be an even number >= 2")
         if not 0.0 <= max_strength_drop <= 0.5:
             raise ValueError("max_strength_drop must be in [0, 0.5]")
         if minimum_diversity_gain < 0.0 or frontier_gain_weight < 0.0:
@@ -76,7 +85,15 @@ class OpenTreeStrengthGuard:
         strength_delta = trial.arena_score - baseline.arena_score
         diversity_delta = self._diversity_score(trial) - self._diversity_score(baseline)
 
-        if trial.arena_games < self.minimum_games:
+        if baseline.reference_id != trial.reference_id:
+            return GuardDecision(
+                False,
+                strength_delta,
+                diversity_delta,
+                "Arena reference changed; score delta is not comparable",
+            )
+
+        if baseline.arena_games < self.minimum_games or trial.arena_games < self.minimum_games:
             return GuardDecision(
                 False,
                 strength_delta,
