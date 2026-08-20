@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
-from .opentree_policy import OpenTreePolicy
+from .opentree_policy import CurriculumMix, OpenTreePolicy
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,52 @@ class TrialResult:
     rolled_back: bool
 
 
+def _policy_to_dict(policy: OpenTreePolicy) -> dict[str, Any]:
+    return {
+        "mix": policy.mix.as_dict(),
+        "early_temperature_scale": policy.early_temperature_scale,
+        "frontier_gap_cp": policy.frontier_gap_cp,
+        "reason": policy.reason,
+    }
+
+
+def _policy_from_dict(data: dict[str, Any]) -> OpenTreePolicy:
+    mix = data["mix"]
+    return OpenTreePolicy(
+        mix=CurriculumMix(
+            float(mix["natural"]),
+            float(mix["frontier"]),
+            float(mix["specialist"]),
+            float(mix["anchor"]),
+        ),
+        early_temperature_scale=float(data["early_temperature_scale"]),
+        frontier_gap_cp=int(data["frontier_gap_cp"]),
+        reason=str(data.get("reason", "restored OpenTree policy")),
+    )
+
+
+def _evidence_to_dict(evidence: TrialEvidence) -> dict[str, Any]:
+    return {
+        "arena_score": evidence.arena_score,
+        "arena_games": evidence.arena_games,
+        "effective_branches": evidence.effective_branches,
+        "viable_frontier": evidence.viable_frontier,
+        "collapse_warning": evidence.collapse_warning,
+        "reference_id": evidence.reference_id,
+    }
+
+
+def _evidence_from_dict(data: dict[str, Any]) -> TrialEvidence:
+    return TrialEvidence(
+        arena_score=float(data["arena_score"]),
+        arena_games=int(data["arena_games"]),
+        effective_branches=float(data["effective_branches"]),
+        viable_frontier=int(data["viable_frontier"]),
+        collapse_warning=bool(data.get("collapse_warning", False)),
+        reference_id=str(data.get("reference_id", "champion")),
+    )
+
+
 class OpenTreePolicyTrialManager:
     """Two-phase rollout for adaptive opening curriculum changes.
 
@@ -30,8 +77,12 @@ class OpenTreePolicyTrialManager:
     strength guard whether the new policy earned the right to persist.
 
     Rejected trials enter a short cooldown. This prevents repeatedly retrying a
-    diversity-heavy policy that just failed the chess-strength gate.
+    diversity-heavy policy that just failed the chess-strength gate. The small
+    state machine can also be snapshotted to JSON/SQLite metadata so a laptop
+    sleep/restart does not silently forget an active experiment.
     """
+
+    SNAPSHOT_VERSION = 1
 
     def __init__(
         self,
@@ -100,3 +151,46 @@ class OpenTreePolicyTrialManager:
             decision=decision,
             rolled_back=rolled_back,
         )
+
+    def snapshot(self) -> dict[str, Any]:
+        active: dict[str, Any] | None = None
+        if self._active is not None:
+            active = {
+                "trial_id": self._active.trial_id,
+                "baseline_policy": _policy_to_dict(self._active.baseline_policy),
+                "trial_policy": _policy_to_dict(self._active.trial_policy),
+                "baseline_evidence": _evidence_to_dict(self._active.baseline_evidence),
+            }
+        return {
+            "version": self.SNAPSHOT_VERSION,
+            "next_id": self._next_id,
+            "cooldown_rounds": self._cooldown,
+            "rejection_cooldown_rounds": self.rejection_cooldown_rounds,
+            "active": active,
+        }
+
+    @classmethod
+    def restore(
+        cls,
+        data: dict[str, Any],
+        *,
+        guard: OpenTreeStrengthGuard | None = None,
+    ) -> "OpenTreePolicyTrialManager":
+        if int(data.get("version", 0)) != cls.SNAPSHOT_VERSION:
+            raise ValueError("unsupported OpenTree policy-trial snapshot version")
+        manager = cls(
+            guard=guard,
+            rejection_cooldown_rounds=int(data.get("rejection_cooldown_rounds", 2)),
+        )
+        manager._next_id = max(1, int(data.get("next_id", 1)))
+        manager._cooldown = max(0, int(data.get("cooldown_rounds", 0)))
+        active = data.get("active")
+        if active is not None:
+            manager._active = PolicyTrial(
+                trial_id=int(active["trial_id"]),
+                baseline_policy=_policy_from_dict(active["baseline_policy"]),
+                trial_policy=_policy_from_dict(active["trial_policy"]),
+                baseline_evidence=_evidence_from_dict(active["baseline_evidence"]),
+            )
+            manager._next_id = max(manager._next_id, manager._active.trial_id + 1)
+        return manager
