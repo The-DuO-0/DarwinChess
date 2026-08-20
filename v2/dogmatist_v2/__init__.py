@@ -18,6 +18,14 @@ from .dynasty import (
 )
 from .hard_positions import HardPositionCandidate, HardPositionMiner
 from .league import Candidate, MatchResult, LeagueTable, select_survivors
+from .live_bridge import (
+    AlphaBetaTeacherAdapter,
+    CapturedHardPosition,
+    LiveGameEvidenceBridge,
+    TeacherReplayTarget,
+    TeacherSearchBudget,
+    cp_to_value,
+)
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
     CurriculumMix,
@@ -102,6 +110,12 @@ __all__ = [
     "MatchResult",
     "LeagueTable",
     "select_survivors",
+    "AlphaBetaTeacherAdapter",
+    "CapturedHardPosition",
+    "LiveGameEvidenceBridge",
+    "TeacherReplayTarget",
+    "TeacherSearchBudget",
+    "cp_to_value",
     "GuardDecision",
     "OpenTreeStrengthGuard",
     "TrialEvidence",
