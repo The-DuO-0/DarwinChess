@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from dogmatist_v2.strength_lab import (
     EngineRevisionGate,
     EngineTrialEvidence,
@@ -121,3 +123,37 @@ def test_engine_revision_is_adopted_only_after_gate_accepts(tmp_path):
         )
         store.adopt_engine_revision("search-r2", adopted_at=NOW)
         assert store.active_engine_revision() == "search-r2"
+
+
+def test_engine_revision_cannot_skip_or_bypass_gate(tmp_path):
+    path = tmp_path / "strength.sqlite3"
+    gate = EngineRevisionGate()
+    with StrengthStore(path) as store:
+        store.register_engine_revision(
+            "search-r1",
+            parent_revision_id=None,
+            description="baseline",
+            created_at=NOW,
+            status="active",
+        )
+        store.register_engine_revision(
+            "search-bad",
+            parent_revision_id="search-r1",
+            description="too expensive",
+            created_at=NOW,
+        )
+        with pytest.raises(RuntimeError, match="no recorded A/B gate evidence"):
+            store.adopt_engine_revision("search-bad", adopted_at=NOW)
+
+        evidence = EngineTrialEvidence("search-bad", 16, 0.60, 0.02, 1.90)
+        decision = gate.decide(evidence)
+        assert decision.action.value == "reject"
+        store.record_engine_trial(
+            evidence,
+            baseline_revision_id="search-r1",
+            decision=decision,
+            recorded_at=NOW,
+        )
+        with pytest.raises(RuntimeError, match="latest gate=reject"):
+            store.adopt_engine_revision("search-bad", adopted_at=NOW)
+        assert store.active_engine_revision() == "search-r1"
