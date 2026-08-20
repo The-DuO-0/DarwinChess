@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -189,6 +190,7 @@ class AgentBridge(QObject):
 
 class ProcessController(QObject):
     output = Signal(str)
+    ui_event = Signal(object)
     started = Signal(str)
     finished = Signal(int)
     state_changed = Signal(bool)
@@ -201,6 +203,7 @@ class ProcessController(QObject):
         self.process.started.connect(self._on_started)
         self.process.finished.connect(self._on_finished)
         self.label = ""
+        self._ui_line_buffer = ""
 
     @property
     def running(self) -> bool:
@@ -210,16 +213,33 @@ class ProcessController(QObject):
         if self.running:
             return False
         self.label = label
+        self._ui_line_buffer = ""
         self.process.setProgram(darwin_executable())
         self.process.setArguments(args)
         self.process.start()
         return True
 
+    def _parse_ui_line(self, line: str) -> None:
+        prefix = "DOGMATIST_UI "
+        if not line.startswith(prefix):
+            return
+        try:
+            payload = json.loads(line[len(prefix):])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        if isinstance(payload, dict):
+            self.ui_event.emit(payload)
+
     @Slot()
     def _read_output(self) -> None:
         raw = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        if raw:
-            self.output.emit(raw.rstrip())
+        if not raw:
+            return
+        self._ui_line_buffer += raw
+        while "\n" in self._ui_line_buffer:
+            line, self._ui_line_buffer = self._ui_line_buffer.split("\n", 1)
+            self._parse_ui_line(line.rstrip("\r"))
+        self.output.emit(raw.rstrip())
 
     @Slot()
     def _on_started(self) -> None:
@@ -228,6 +248,9 @@ class ProcessController(QObject):
 
     @Slot(int, QProcess.ExitStatus)
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        if self._ui_line_buffer:
+            self._parse_ui_line(self._ui_line_buffer.rstrip("\r"))
+            self._ui_line_buffer = ""
         self.state_changed.emit(False)
         self.finished.emit(exit_code)
 
@@ -238,7 +261,7 @@ class ProcessController(QObject):
         if pid > 0 and os.name == "posix":
             try:
                 os.kill(pid, signal.SIGINT)
-                self.output.emit("[Studio] Sent SIGINT; DarwinChess will stop at its safe boundary.")
+                self.output.emit("[Studio] Sent SIGINT; DogMatist will drain the current colour pair(s) and stop safely.")
                 return
             except OSError:
                 pass
