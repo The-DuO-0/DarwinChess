@@ -68,9 +68,12 @@ class OpenTreeCurriculumController:
     """Adaptive anti-collapse controller that changes *where* to train.
 
     It never forces a named opening or a particular first move. If OpenTree
-    becomes too concentrated, the controller increases Natural/Frontier
-    sampling and early stochasticity while preserving the search-safety guard.
-    Hysteresis and per-update step limits prevent curriculum oscillation.
+    becomes too concentrated, the controller increases Frontier sampling and
+    early stochasticity while preserving the search-safety guard. Natural
+    self-play remains the fallback when there is no useful frontier inventory.
+
+    Hysteresis plus bounded per-update movement prevents a single noisy round
+    from causing curriculum oscillation.
     """
 
     def __init__(
@@ -139,6 +142,17 @@ class OpenTreeCurriculumController:
             anchor / total,
         )
 
+    def _recover_toward_base(self, cur: CurriculumMix) -> CurriculumMix:
+        current = (cur.natural, cur.frontier, cur.specialist, cur.anchor)
+        target = (self.base.natural, self.base.frontier, self.base.specialist, self.base.anchor)
+        max_abs_delta = max(abs(t - v) for v, t in zip(current, target))
+        if max_abs_delta <= 1e-12:
+            return self.base
+        alpha = min(1.0, self.max_step / max_abs_delta)
+        moved = tuple(v + alpha * (t - v) for v, t in zip(current, target))
+        # Convex interpolation preserves the exact unit total up to float noise.
+        return self._normalize(*moved)
+
     def update(self, health: TreeHealth) -> OpenTreePolicy:
         self._collapsed = self._detect(health)
         cur = self._mix
@@ -169,20 +183,9 @@ class OpenTreeCurriculumController:
             )
             temp_scale = min(1.35, 1.08 + severity)
             gap_cp = min(self.max_frontier_gap_cp, self.base_frontier_gap_cp + int(80 * severity))
-            reason = "root-concentration: expand Natural/Frontier coverage"
+            reason = "root-concentration: expand frontier coverage"
         else:
-            # Return toward baseline slowly after sustained-looking recovery.
-            def toward(value: float, target: float) -> float:
-                delta = target - value
-                if abs(delta) <= self.max_step:
-                    return target
-                return value + (self.max_step if delta > 0 else -self.max_step)
-
-            natural = toward(cur.natural, self.base.natural)
-            frontier = toward(cur.frontier, self.base.frontier)
-            specialist = toward(cur.specialist, self.base.specialist)
-            anchor = toward(cur.anchor, self.base.anchor)
-            self._mix = self._normalize(natural, frontier, specialist, anchor)
+            self._mix = self._recover_toward_base(cur)
             temp_scale = 1.0
             gap_cp = self.base_frontier_gap_cp
             reason = "tree-health nominal"
