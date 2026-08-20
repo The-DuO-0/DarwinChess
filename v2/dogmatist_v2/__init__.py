@@ -81,6 +81,7 @@ from .ui_flow import (
     build_evolution_flow_snapshot,
     encode_ui_event,
 )
+from .worker_supervisor import KillableWorker, LeagueWorkerSupervisor, WorkerTermination
 
 __all__ = [
     "ArchiveEntry",
@@ -160,4 +161,7 @@ __all__ = [
     "EvolutionStage",
     "build_evolution_flow_snapshot",
     "encode_ui_event",
+    "KillableWorker",
+    "LeagueWorkerSupervisor",
+    "WorkerTermination",
 ]
