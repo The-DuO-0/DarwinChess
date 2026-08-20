@@ -8,7 +8,7 @@ A curriculum change is first a **trial**, never an immediate permanent setting.
 
 1. Record baseline held-out Arena score and OpenTree health.
 2. Apply the proposed curriculum for one bounded training window.
-3. Run paired held-out evaluation.
+3. Run paired held-out evaluation against the same fixed reference.
 4. Compare strength first, diversity second.
 5. Accept the trial only if it stays inside the configured strength-loss budget and provides useful evidence; otherwise roll back to the baseline policy.
 
@@ -19,20 +19,22 @@ Training loss is explicitly not a strength metric.
 `TrialEvidence` currently records only bounded scalar evidence:
 
 - paired Arena score and game count;
+- a `reference_id` for the fixed comparison opponent;
 - effective opening branches;
 - viable frontier inventory;
 - whether the baseline tree is already in a collapse state.
 
-No opening graph is loaded into RAM.
+Baseline and trial evidence are rejected as non-comparable if the Arena reference changed. Arena game counts must also be even, which protects the paired-color assumption at the data boundary. No opening graph is loaded into RAM.
 
 ## Default safety behavior
 
-- Fewer than 12 held-out games: do not promote a policy change.
+- Fewer than 12 held-out games in either baseline or trial evidence: do not promote a policy change.
 - Strength drop worse than 0.06 score: reject even if diversity improves dramatically.
 - A strength-safe trial can remain active while recovering from an already-collapsed tree, because entropy may lag behind training.
 - Outside collapse recovery, a trial should either produce a measurable diversity gain or a clear strength gain.
 - Rejected policies trigger a short cooldown before another adaptive trial can start.
 - Policy trials cannot overlap.
+- Changing the Arena reference invalidates the score delta instead of silently comparing unlike evaluations.
 
 These thresholds are R&D defaults, not final research claims. They will be calibrated from the isolated Mac multi-round experiment.
 
@@ -58,4 +60,4 @@ The trial manager implements rollback and rejection cooldown. It is intentionall
 
 ## Validation state
 
-The new pure-Python guard logic has been manually exercised against the six principal decision cases: strength regression, safe diversity gain, insufficient evidence, collapse recovery, clear strength gain, and no material gain. Repository unit tests have been added for both the guard and trial manager; full test-suite execution remains part of the next isolated validation gate.
+The pure-Python guard logic has been manually exercised against the principal decision cases: strength regression, safe diversity gain, insufficient evidence, collapse recovery, clear strength gain, no material gain, reference mismatch, and invalid unpaired game counts. Repository unit tests have been added for both the guard and trial manager; full test-suite execution remains part of the next isolated validation gate.
