@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .archive import ArchiveEntry, ArchiveTier
 from .dynasty import ChampionReign, HistoricalEvent
@@ -110,7 +109,26 @@ class ChronicleStore:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def upsert_archive_entry(
+    @staticmethod
+    def _archive_values(
+        entry: ArchiveEntry,
+        archived_at: datetime | None,
+        last_used_at: datetime | None,
+    ) -> tuple[object, ...]:
+        return (
+            entry.generation_id,
+            entry.tier.value,
+            str(entry.checkpoint_path) if entry.checkpoint_path else None,
+            entry.checkpoint_bytes,
+            int(entry.ever_champion),
+            entry.specialist_score,
+            int(entry.protected),
+            entry.reason,
+            _iso(archived_at),
+            _iso(last_used_at),
+        )
+
+    def _upsert_archive_entry_no_commit(
         self,
         entry: ArchiveEntry,
         *,
@@ -128,25 +146,27 @@ class ChronicleStore:
                 tier=excluded.tier,
                 checkpoint_path=excluded.checkpoint_path,
                 checkpoint_bytes=excluded.checkpoint_bytes,
-                ever_champion=excluded.ever_champion,
-                specialist_score=excluded.specialist_score,
-                protected=excluded.protected,
+                ever_champion=MAX(generation_archive.ever_champion, excluded.ever_champion),
+                specialist_score=MAX(generation_archive.specialist_score, excluded.specialist_score),
+                protected=MAX(generation_archive.protected, excluded.protected),
                 reason=excluded.reason,
                 archived_at=COALESCE(excluded.archived_at, generation_archive.archived_at),
                 last_used_at=COALESCE(excluded.last_used_at, generation_archive.last_used_at)
             """,
-            (
-                entry.generation_id,
-                entry.tier.value,
-                str(entry.checkpoint_path) if entry.checkpoint_path else None,
-                entry.checkpoint_bytes,
-                int(entry.ever_champion),
-                entry.specialist_score,
-                int(entry.protected),
-                entry.reason,
-                _iso(archived_at),
-                _iso(last_used_at),
-            ),
+            self._archive_values(entry, archived_at, last_used_at),
+        )
+
+    def upsert_archive_entry(
+        self,
+        entry: ArchiveEntry,
+        *,
+        archived_at: datetime | None = None,
+        last_used_at: datetime | None = None,
+    ) -> None:
+        self._upsert_archive_entry_no_commit(
+            entry,
+            archived_at=archived_at,
+            last_used_at=last_used_at,
         )
         self._conn.commit()
 
@@ -168,9 +188,25 @@ class ChronicleStore:
             for row in rows
         )
 
+    def active_reign(self) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM champion_reigns
+            WHERE ended_at IS NULL
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def start_reign(self, reign: ChampionReign) -> None:
         if not reign.active:
             raise ValueError("start_reign expects an active reign")
+        existing = self.active_reign()
+        if existing is not None:
+            raise RuntimeError(
+                f"cannot start Gen{reign.generation_id}; Gen{existing['generation_id']} already has an active reign"
+            )
         self._conn.execute(
             """
             INSERT INTO champion_reigns(
@@ -210,6 +246,93 @@ class ChronicleStore:
             self._conn.rollback()
             raise LookupError(f"no active reign found for generation {generation_id}")
         self._conn.commit()
+
+    def record_champion_succession(
+        self,
+        *,
+        outgoing: ArchiveEntry,
+        incoming: ArchiveEntry,
+        occurred_at: datetime,
+        replacement_reason: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
+        """Atomically close one reign, open the next and persist both bodies.
+
+        Returns ``False`` when the exact succession was already committed. This
+        makes a production promotion callback safe to retry after a crash or
+        uncertain acknowledgement.
+        """
+        if outgoing.generation_id == incoming.generation_id:
+            raise ValueError("champion succession requires two different generations")
+        if outgoing.tier is not ArchiveTier.IMMORTAL or not outgoing.ever_champion or not outgoing.protected:
+            raise ValueError("outgoing champion must enter protected IMMORTAL archive")
+        if incoming.tier is not ArchiveTier.ACTIVE or not incoming.ever_champion:
+            raise ValueError("incoming champion must be ACTIVE and marked ever_champion")
+
+        timestamp = _iso(occurred_at)
+        payload = json.dumps(evidence or {}, separators=(",", ":"), sort_keys=True)
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            current = self._conn.execute(
+                """
+                SELECT * FROM champion_reigns
+                WHERE ended_at IS NULL
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+            if current is not None and current["generation_id"] == incoming.generation_id:
+                self._conn.rollback()
+                return False
+            if current is None or current["generation_id"] != outgoing.generation_id:
+                actual = None if current is None else current["generation_id"]
+                raise RuntimeError(
+                    f"succession expected active Gen{outgoing.generation_id}, found {actual}"
+                )
+
+            cursor = self._conn.execute(
+                """
+                UPDATE champion_reigns
+                SET ended_at=?, dethroned_by=?, replacement_reason=?
+                WHERE id=? AND ended_at IS NULL
+                """,
+                (timestamp, incoming.generation_id, replacement_reason, current["id"]),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("active champion reign changed during succession")
+
+            self._conn.execute(
+                """
+                INSERT INTO champion_reigns(
+                    generation_id, started_at, challengers_faced, games_during_reign
+                ) VALUES (?, ?, 0, 0)
+                """,
+                (incoming.generation_id, timestamp),
+            )
+            self._upsert_archive_entry_no_commit(outgoing, archived_at=occurred_at)
+            self._upsert_archive_entry_no_commit(incoming, last_used_at=occurred_at)
+            self._conn.execute(
+                """
+                INSERT INTO historical_events(
+                    occurred_at, kind, generation_id, related_generation_id,
+                    text, evidence_json
+                ) VALUES (?, 'champion_succession', ?, ?, ?, ?)
+                """,
+                (
+                    timestamp,
+                    outgoing.generation_id,
+                    incoming.generation_id,
+                    f"Gen{outgoing.generation_id} was succeeded by Gen{incoming.generation_id}: {replacement_reason}",
+                    payload,
+                ),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
 
     def increment_reign_activity(
         self,
@@ -274,6 +397,27 @@ class ChronicleStore:
             ),
         )
         self._conn.commit()
+
+    def trait_records(
+        self,
+        generation_id: int | None = None,
+        *,
+        trait_kind: str | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        where: list[str] = []
+        values: list[object] = []
+        if generation_id is not None:
+            where.append("generation_id=?")
+            values.append(generation_id)
+        if trait_kind is not None:
+            where.append("trait_kind=?")
+            values.append(trait_kind)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        rows = self._conn.execute(
+            "SELECT * FROM generation_traits" + clause + " ORDER BY score DESC, sample_games DESC",
+            values,
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
 
     def record_event(
         self,
