@@ -20,6 +20,7 @@ The downloadable integration snapshot contains `RESEARCH_V217_OPENTREE.py` plus 
 - evaluates the top shadow candidate against the fixed reference;
 - when an adaptive curriculum trial is active, freezes the exact same paired start positions for the baseline champion and trial candidate;
 - permits durable promotion only after the ordinary gate and fixed-reference policy guard both allow it;
+- explicitly supports hard rejection of a shadow candidate that passed the small ordinary Arena but failed the fixed-reference policy gate;
 - preserves branch-specialist retention independently from overall promotion;
 - writes one compact JSONL trace row per round plus a final conservative report.
 
@@ -66,6 +67,14 @@ A larger or more diverse OpenTree can never override a material chess-strength f
 ## Resource policy
 
 The full opening graph stays in SQLite. The experiment adds one frozen CPU reference model and compact scalar trace state; it does not add another MPS trainer. The one-GPU-trainer rule remains unchanged.
+
+## Validation state
+
+- V2.1.6 shadow-gate real-Mac smoke: passed.
+- V2.1.6 four-round OpenTree real-Mac multirun: passed.
+- V2.1.7 integration snapshot: Python compilation passed in the development container.
+- V2.1.7 report serialization/validation tests: passed locally.
+- GitHub Actions pure-Python v2 suite on the V2.1.7 trace-schema/documentation head: passed.
 
 ## Remaining gate
 
