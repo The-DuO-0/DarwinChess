@@ -12,11 +12,11 @@ def _seed(store: StrengthStore, count: int) -> None:
     for index in range(count):
         store.upsert_hard_position(
             HardPositionEvidence(
-                fen=f"8/8/8/8/8/8/{index + 1}k6/K7 w - - 0 1",
+                fen=f"test-position-{index} w - - 0 1",
                 opening_bucket="endgame" if index % 2 == 0 else "open-A",
                 source_generation=15,
                 source_kind="arena_loss",
-                severity=1.0 - 0.03 * index,
+                severity=max(0.05, 1.0 - 0.02 * index),
                 uncertainty=0.5,
                 value_error=0.6,
                 round_index=3,
