@@ -5,7 +5,6 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 from .strength_lab import EngineGateDecision, EngineTrialEvidence, RoundStrengthEvidence, StrengthMode
 
@@ -332,6 +331,22 @@ class StrengthStore:
         ).fetchone()
         if row is None:
             raise LookupError(f"unknown engine revision: {revision_id}")
+
+        latest_trial = self._conn.execute(
+            """
+            SELECT decision, reason FROM engine_trials
+            WHERE revision_id=? ORDER BY id DESC LIMIT 1
+            """,
+            (revision_id,),
+        ).fetchone()
+        if latest_trial is None:
+            raise RuntimeError("engine revision has no recorded A/B gate evidence")
+        if latest_trial["decision"] != "accept":
+            raise RuntimeError(
+                f"engine revision cannot be adopted: latest gate={latest_trial['decision']} "
+                f"({latest_trial['reason']})"
+            )
+
         self._conn.execute(
             "UPDATE engine_revisions SET status='retired' WHERE status='active'"
         )
