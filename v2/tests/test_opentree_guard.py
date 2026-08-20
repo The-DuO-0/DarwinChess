@@ -1,13 +1,16 @@
+import pytest
+
 from dogmatist_v2.opentree_guard import OpenTreeStrengthGuard, TrialEvidence
 
 
-def ev(score, games=16, branches=3.0, frontier=100, collapsed=False):
+def ev(score, games=16, branches=3.0, frontier=100, collapsed=False, reference="champion"):
     return TrialEvidence(
         arena_score=score,
         arena_games=games,
         effective_branches=branches,
         viable_frontier=frontier,
         collapse_warning=collapsed,
+        reference_id=reference,
     )
 
 
@@ -63,3 +66,22 @@ def test_no_material_gain_rolls_back_policy():
     decision = guard.decide(baseline, trial)
     assert not decision.accept_policy
     assert "no meaningful" in decision.reason
+
+
+def test_reference_change_makes_scores_non_comparable():
+    guard = OpenTreeStrengthGuard()
+    baseline = ev(0.55, reference="gen15")
+    trial = ev(0.62, reference="gen23")
+    decision = guard.decide(baseline, trial)
+    assert not decision.accept_policy
+    assert "reference changed" in decision.reason
+
+
+def test_paired_arena_requires_even_game_count():
+    with pytest.raises(ValueError):
+        ev(0.55, games=15)
+
+
+def test_guard_minimum_games_must_preserve_pairs():
+    with pytest.raises(ValueError):
+        OpenTreeStrengthGuard(minimum_games=11)
