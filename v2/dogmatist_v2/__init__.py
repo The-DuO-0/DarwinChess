@@ -61,6 +61,12 @@ from .strength_lab import (
     StrengthMode,
     TrainingBatchBudget,
 )
+from .strength_pipeline import (
+    DeepSearchTeacherRequest,
+    EngineABTrialPlan,
+    StrengthPipelinePlanner,
+    StrengthRoundRecipe,
+)
 from .strength_store import HardPositionEvidence, StrengthStore
 from .ui_flow import (
     EvolutionFlowSnapshot,
@@ -129,6 +135,10 @@ __all__ = [
     "StrengthLabPlan",
     "StrengthMode",
     "TrainingBatchBudget",
+    "DeepSearchTeacherRequest",
+    "EngineABTrialPlan",
+    "StrengthPipelinePlanner",
+    "StrengthRoundRecipe",
     "HardPositionEvidence",
     "StrengthStore",
     "EvolutionFlowSnapshot",
