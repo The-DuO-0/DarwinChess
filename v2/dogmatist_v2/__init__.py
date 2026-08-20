@@ -59,7 +59,9 @@ from .strength_lab import (
     StrengthLabController,
     StrengthLabPlan,
     StrengthMode,
+    TrainingBatchBudget,
 )
+from .strength_store import HardPositionEvidence, StrengthStore
 from .ui_flow import (
     EvolutionFlowSnapshot,
     EvolutionStage,
@@ -126,6 +128,9 @@ __all__ = [
     "StrengthLabController",
     "StrengthLabPlan",
     "StrengthMode",
+    "TrainingBatchBudget",
+    "HardPositionEvidence",
+    "StrengthStore",
     "EvolutionFlowSnapshot",
     "EvolutionStage",
     "build_evolution_flow_snapshot",
