@@ -60,6 +60,17 @@ def test_large_strength_regression_fails_even_if_tree_is_pretty():
     assert "strength regression" in summary.reasons[0]
 
 
+def test_missing_strength_evidence_never_passes():
+    report = OpenTreeExperimentReport()
+    report.add(trace(1, games=0, nodes=100, edges=160))
+    report.add(trace(2, games=0, nodes=150, edges=230, survival=0.25))
+    report.add(trace(3, games=0, nodes=200, edges=310, survival=0.25))
+    report.add(trace(4, games=0, nodes=250, edges=400, survival=0.25))
+    summary = report.summarize()
+    assert summary.verdict == "watch"
+    assert any("paired Arena evidence" in reason for reason in summary.reasons)
+
+
 def test_low_branch_survival_keeps_experiment_in_watch_state():
     report = OpenTreeExperimentReport(minimum_branch_survival=0.12)
     report.add(trace(1, nodes=100, edges=160))
