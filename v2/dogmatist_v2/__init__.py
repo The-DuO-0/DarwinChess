@@ -26,6 +26,7 @@ from .live_bridge import (
     TeacherSearchBudget,
     cp_to_value,
 )
+from .live_replay import LiveReplayMixSampler, ReplayBatchQuota
 from .live_runtime_overlay import LiveReplayExample, LiveStrengthCoordinator, LiveStrengthRoundReport
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
@@ -117,6 +118,8 @@ __all__ = [
     "TeacherReplayTarget",
     "TeacherSearchBudget",
     "cp_to_value",
+    "LiveReplayMixSampler",
+    "ReplayBatchQuota",
     "LiveReplayExample",
     "LiveStrengthCoordinator",
     "LiveStrengthRoundReport",
