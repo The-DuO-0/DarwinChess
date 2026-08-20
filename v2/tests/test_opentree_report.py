@@ -17,6 +17,9 @@ def trace(
     collapse=False,
     status="baseline",
     reference="gen15",
+    champion=15,
+    candidate=20,
+    action="none",
 ):
     return OpenTreeRoundTrace(
         round_id=round_id,
@@ -33,6 +36,18 @@ def trace(
         db_bytes=db_bytes,
         collapse_warning=collapse,
         policy_trial_status=status,
+        champion_generation=champion,
+        candidate_generation=candidate,
+        arena_wins=6,
+        arena_draws=8,
+        arena_losses=2,
+        training_loss=1.25,
+        policy_natural=0.45,
+        policy_frontier=0.30,
+        policy_specialist=0.15,
+        policy_anchor=0.10,
+        promotion_action=action,
+        elapsed_seconds=12.5,
     )
 
 
@@ -93,11 +108,11 @@ def test_repeated_rollbacks_are_visible():
     assert summary.rollback_count == 2
 
 
-def test_jsonl_round_trip(tmp_path):
+def test_jsonl_round_trip_preserves_v217_fields(tmp_path):
     report = OpenTreeExperimentReport(
         [
-            trace(1, nodes=100, edges=160),
-            trace(2, nodes=130, edges=200),
+            trace(1, nodes=100, edges=160, action="reject"),
+            trace(2, nodes=130, edges=200, champion=20, candidate=20, action="promote"),
         ],
         minimum_rounds=2,
     )
@@ -105,6 +120,8 @@ def test_jsonl_round_trip(tmp_path):
     report.write_jsonl(path)
     loaded = OpenTreeExperimentReport.read_jsonl(path, minimum_rounds=2)
     assert loaded.traces == report.traces
+    assert loaded.traces[-1].promotion_action == "promote"
+    assert loaded.traces[-1].champion_generation == 20
     assert loaded.summarize().reference_id == "gen15"
 
 
@@ -126,3 +143,18 @@ def test_paired_arena_game_count_is_required():
         assert "even paired-game count" in str(exc)
     else:
         raise AssertionError("odd Arena game count must be rejected")
+
+
+def test_v217_policy_mix_must_sum_to_one():
+    try:
+        OpenTreeRoundTrace(
+            1, "gen15", 0.5, 8, 10, 10, 5, 2, 2.0, 0.5, 0.2, 1000,
+            policy_natural=0.50,
+            policy_frontier=0.50,
+            policy_specialist=0.20,
+            policy_anchor=0.0,
+        )
+    except ValueError as exc:
+        assert "policy mix" in str(exc)
+    else:
+        raise AssertionError("invalid policy mix should fail")
