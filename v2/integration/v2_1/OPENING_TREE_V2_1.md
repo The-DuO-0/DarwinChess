@@ -43,86 +43,63 @@ A frontier edge is eligible when it is:
 
 Selection weight combines search viability, low visit count, uncertainty, and parent support. Frontier self-play starts from the parent position and forces only the first *dog-discovered* frontier move; search is still run at that position and the replay target remains the search-best move. A current-search safety guard cancels the forced exploration move if it has become too weak. This keeps exploration separate from policy supervision.
 
-## V2.1.2 — true hidden promotion frontier
+## Promotion holdout frontier
 
-V2.1.1 used `edge.visits == 0` as the definition of an unplayed promotion frontier. That still had two leaks:
-
-1. the same child position could already have been visited through a transposition even when this parent edge was unplayed;
-2. a hidden frontier position could be reused by multiple promotion gates, turning the holdout into another fixed benchmark over generations.
-
-V2.1.2 fixes both.
-
-A strict promotion frontier now requires:
-
-- the candidate edge has never been played;
-- the **child position itself has zero visits**, including visits through other move orders;
-- the child has never been used by a previous final promotion gate;
-- the move remains within the configured search-gap viability threshold.
-
-Promotion exposure is stored in `opening_eval_exposures`. A strict frontier child is retired from the hidden pool after it is actually evaluated. League exposure is tracked separately and may be reused a small bounded number of times because League is only a screening stage.
-
-The final gate also distinguishes `frontier-eval-holdout` from ordinary `frontier-eval` fallback positions in game metadata, so future research/UI can measure how much of an Arena was genuinely unseen.
-
-### Adaptive-Arena holdout preservation
-
-Arena pre-generates a maximum schedule but may stop early after enough statistical evidence. V2.1.2 marks a hidden position as exposed **only when its paired-color games actually begin**. Unused positions at the tail of an early-stopped schedule are not burned from the holdout pool.
-
-## Evaluation mix
+League screening and final promotion no longer need to use the exact same opening distribution.
 
 - **League:** may use lightly explored frontier positions because its job is cheap ranking/budget allocation.
-- **Final Arena:** preferentially samples strict unseen frontier child positions.
+- **Final Arena:** preferentially samples viable frontier child positions with `visits == 0` — positions that search noticed but self-play has not yet actually consumed.
+
+V2.1.2 tightens this rule: a strict promotion holdout must also have an unvisited child position, closing transposition leakage, and it retires after actual promotion exposure. Once self-play visits such a branch, it also leaves the strict unplayed holdout pool.
 
 Default promotion mix in the R&D snapshot:
 
 - 20% anchor coverage;
-- 50% frontier, preferring strict unseen child positions;
+- 50% frontier, preferring strict unseen child branches;
 - 30% broad OpenTree positions.
 
-If the strict pool is temporarily too small, the gate falls back to the wider frontier/broad-tree coverage rather than failing, and the source label records that it was a fallback rather than a true hidden holdout.
+## Tree-health diagnostics
 
-## V2.1.2 tree-health research metrics
+V2.1.2 adds compact persistent health snapshots rather than copying the graph. Metrics include node/edge counts, frontier/holdout inventory, first-move top share, Shannon entropy/effective branching, per-ply coverage, branch revisit ratio, specialist count, promotion exposures and database size. A conservative collapse warning is diagnostic only until the root has enough visits.
 
-The persistent database now supports longitudinal OpenTree health snapshots. Each completed population round can record:
+## V2.1.3 adaptive anti-collapse curriculum
 
-- total nodes and edges;
-- played vs candidate-only edges;
-- viable frontier inventory;
-- strict promotion-holdout inventory;
-- active branch specialists;
-- promotion-holdout exposure count;
-- mature/revisited branch ratio;
-- root first-move visit count;
-- root top-move share;
-- root Shannon entropy and effective branch count `exp(H)`;
-- per-ply node/visit coverage;
-- SQLite database size;
-- a conservative root-collapse warning.
+V2.1.3 adds a conservative response layer in `dogmatist_v2/opentree_policy.py`.
 
-The collapse warning does not fire on tiny samples. Once the natural root has enough visits, it flags a strong first-move monoculture (for example, top move share above roughly 72% or effective root branching below roughly 2.3). This is diagnostic only; it does not automatically mutate training yet.
+The response changes **curriculum allocation**, not chess rules and not human opening preferences. When mature root statistics show probable concentration collapse, the controller gradually shifts compute toward search-viable Frontier exploration, modestly raises early stochastic temperature, and may loosen the frontier search-gap cap within a hard safety ceiling. Specialist and anchor floors remain protected.
 
-Snapshots are stored in `opening_tree_snapshots`, and `status()` can expose recent deltas such as node growth, frontier growth, hidden-holdout growth and effective-branching change.
+Safeguards:
 
-## Isolated Mac smoke plans
+- minimum sample count before intervention;
+- separate collapse/recovery thresholds (hysteresis);
+- bounded per-round curriculum movement;
+- convex recovery to the 45/30/15/10 baseline;
+- zero-frontier fallback to Natural self-play;
+- no named-opening target and no forced first move.
 
-Two non-destructive harnesses exist in the local R&D snapshot:
+The corresponding unit tests are committed, but this newest controller still needs execution in CI or the isolated Mac R&D environment before integration into the evolution runtime.
 
-- `SMOKE_V21_OPENTREE.py`: one natural discovery followed by one safe frontier-consumption test.
-- `SMOKE_V212_MULTIRUN.py`: four isolated short rounds checking graph growth, frontier consumption, rotating promotion holdouts and health-snapshot trends.
+## Isolated Mac smoke plan
 
-Both copy the live package into a temporary directory, overlay the R&D files, set a temporary `DARWINCHESS_HOME`, and leave the live source tree plus `~/.darwinchess` untouched.
+The R&D snapshots include isolated harnesses that copy the live package into a temporary directory, overlay V2.1 there, set a temporary `DARWINCHESS_HOME`, and test natural discovery/frontier consumption without touching the live source tree or lifetime state. V2.1.2 also defines a four-round multirun gate for graph growth, rotating holdouts and health trends.
 
-## Validation in sandbox
+## Validation status
 
-- All modified Python files and smoke harnesses pass `py_compile`.
-- Forward SQLite schema creation passes.
-- Opening node/edge updates and frontier queries pass.
-- Branch-specialist persistence passes.
-- Bounded descendant-region expansion passes.
-- Branch-focused replay sampling successfully draws examples from root + descendants.
-- Strict promotion holdout rejects transposition leakage.
-- Promotion exposure retirement prevents hidden-position reuse.
-- Opening-tree snapshot/trend deltas pass.
-- Synthetic root-monoculture collapse detection passes.
-- Opening-tree memory/holdout/health tests: **5 passed**.
+Previously validated in the development snapshot:
 
-Full chess execution still must be smoke-tested on the Mac because the development sandbox has no `python-chess` installation. V2.1.2 remains intentionally separate from the live V2.0.1 installation until those isolated checks pass.
+- modified Python files compiled;
+- forward SQLite schema creation;
+- opening node/edge persistence and frontier queries;
+- branch-specialist persistence;
+- bounded descendant-region expansion;
+- branch-focused replay sampling;
+- strict holdout/transposition leakage handling;
+- health snapshot/trend logic and synthetic collapse detection.
+
+Still required before live install:
+
+1. execute the committed V2.1.3 policy tests;
+2. run the isolated Mac python-chess smoke/multirun harness;
+3. wire adaptive policy only into the isolated multirun and inspect strength + diversity together;
+4. perform a longer isolated multi-generation run;
+5. only then design the live V2.0.1 -> V2.1 migration.
