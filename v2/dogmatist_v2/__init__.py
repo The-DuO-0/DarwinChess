@@ -8,6 +8,11 @@ from .opentree_policy import (
     OpenTreePolicy,
     TreeHealth,
 )
+from .opentree_promotion import (
+    OpenTreePromotionCoordinator,
+    PromotionDecision,
+    PromotionEvidence,
+)
 from .opentree_report import (
     OpenTreeExperimentReport,
     OpenTreeExperimentSummary,
@@ -29,6 +34,9 @@ __all__ = [
     "OpenTreeCurriculumController",
     "OpenTreePolicy",
     "TreeHealth",
+    "OpenTreePromotionCoordinator",
+    "PromotionDecision",
+    "PromotionEvidence",
     "OpenTreeExperimentReport",
     "OpenTreeExperimentSummary",
     "OpenTreeRoundTrace",
