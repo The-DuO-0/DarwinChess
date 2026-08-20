@@ -16,6 +16,7 @@ from .dynasty import (
     HistoricalRole,
     build_lineage_path,
 )
+from .hard_positions import HardPositionCandidate, HardPositionMiner
 from .league import Candidate, MatchResult, LeagueTable, select_survivors
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
@@ -47,6 +48,18 @@ from .runtime import (
     WatchdogTrip,
 )
 from .specialists import OpeningBucket, SpecialistArchive, SpecialistRecord
+from .strength_lab import (
+    EngineGateAction,
+    EngineGateDecision,
+    EngineRevisionGate,
+    EngineTrialEvidence,
+    PlateauDetector,
+    RoundStrengthEvidence,
+    StrengthCurriculumMix,
+    StrengthLabController,
+    StrengthLabPlan,
+    StrengthMode,
+)
 from .ui_flow import (
     EvolutionFlowSnapshot,
     EvolutionStage,
@@ -67,6 +80,8 @@ __all__ = [
     "HistoricalEvent",
     "HistoricalRole",
     "build_lineage_path",
+    "HardPositionCandidate",
+    "HardPositionMiner",
     "Candidate",
     "MatchResult",
     "LeagueTable",
@@ -101,6 +116,16 @@ __all__ = [
     "OpeningBucket",
     "SpecialistArchive",
     "SpecialistRecord",
+    "EngineGateAction",
+    "EngineGateDecision",
+    "EngineRevisionGate",
+    "EngineTrialEvidence",
+    "PlateauDetector",
+    "RoundStrengthEvidence",
+    "StrengthCurriculumMix",
+    "StrengthLabController",
+    "StrengthLabPlan",
+    "StrengthMode",
     "EvolutionFlowSnapshot",
     "EvolutionStage",
     "build_evolution_flow_snapshot",
