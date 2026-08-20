@@ -15,8 +15,8 @@ def policy(frontier, reason):
     )
 
 
-def evidence(score, *, games=16, branches=3.0, frontier=100, collapsed=False):
-    return TrialEvidence(score, games, branches, frontier, collapsed)
+def evidence(score, *, games=16, branches=3.0, frontier=100, collapsed=False, reference="champion"):
+    return TrialEvidence(score, games, branches, frontier, collapsed, reference)
 
 
 def test_accepted_trial_promotes_trial_policy():
@@ -79,3 +79,48 @@ def test_cannot_finish_without_active_trial():
     manager = OpenTreePolicyTrialManager()
     with pytest.raises(RuntimeError):
         manager.finish(evidence(0.55))
+
+
+def test_active_trial_survives_snapshot_restore():
+    manager = OpenTreePolicyTrialManager(rejection_cooldown_rounds=3)
+    baseline = policy(0.30, "baseline")
+    trial = policy(0.36, "expand")
+    started = manager.start(
+        baseline_policy=baseline,
+        trial_policy=trial,
+        baseline_evidence=evidence(0.57, branches=2.1, frontier=50, reference="gen15"),
+    )
+    restored = OpenTreePolicyTrialManager.restore(manager.snapshot())
+    assert restored.active is not None
+    assert restored.active.trial_id == started.trial_id
+    assert restored.active.baseline_policy == baseline
+    assert restored.active.trial_policy == trial
+    assert restored.active.baseline_evidence.reference_id == "gen15"
+    assert not restored.can_start
+
+
+def test_rejection_cooldown_survives_snapshot_restore():
+    manager = OpenTreePolicyTrialManager(
+        guard=OpenTreeStrengthGuard(max_strength_drop=0.05),
+        rejection_cooldown_rounds=2,
+    )
+    baseline = policy(0.30, "baseline")
+    trial = policy(0.40, "aggressive")
+    manager.start(
+        baseline_policy=baseline,
+        trial_policy=trial,
+        baseline_evidence=evidence(0.64, reference="gen15"),
+    )
+    manager.finish(evidence(0.50, branches=4.0, frontier=250, reference="gen15"))
+    restored = OpenTreePolicyTrialManager.restore(manager.snapshot())
+    assert restored.active is None
+    assert restored.cooldown_rounds == 2
+    assert not restored.can_start
+
+
+def test_unknown_snapshot_version_is_rejected():
+    manager = OpenTreePolicyTrialManager()
+    snapshot = manager.snapshot()
+    snapshot["version"] = 999
+    with pytest.raises(ValueError):
+        OpenTreePolicyTrialManager.restore(snapshot)
