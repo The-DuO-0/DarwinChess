@@ -62,6 +62,19 @@ def test_hysteresis_prevents_one_round_flip_flop_then_recovers():
     assert recovered.early_temperature_scale == 1.0
 
 
+def test_recovery_moves_monotonically_toward_baseline():
+    ctl = OpenTreeCurriculumController()
+    for _ in range(3):
+        ctl.update(_health(root_top_move_share=0.85, root_effective_branches=1.6))
+    high_frontier = ctl.mix.frontier
+    assert high_frontier > 0.30
+
+    p1 = ctl.update(_health(root_top_move_share=0.60, root_effective_branches=3.2))
+    p2 = ctl.update(_health(root_top_move_share=0.58, root_effective_branches=3.4))
+    assert 0.30 <= p2.mix.frontier <= p1.mix.frontier < high_frontier
+    assert abs(sum(p2.mix.as_dict().values()) - 1.0) < 1e-9
+
+
 def test_empty_frontier_falls_back_to_natural_without_retry_loop():
     ctl = OpenTreeCurriculumController()
     policy = ctl.update(_health(viable_frontier=0))
