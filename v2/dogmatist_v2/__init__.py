@@ -36,6 +36,7 @@ from .opentree_report import (
     OpenTreeRoundTrace,
 )
 from .opentree_trials import OpenTreePolicyTrialManager, PolicyTrial, TrialResult
+from .promotion_bridge import ChampionCheckpoint, PromotionChronicleBridge
 from .resource import ResourceBudget, ResourceController, ResourceSample
 from .runtime import (
     ColorPairing,
@@ -47,7 +48,13 @@ from .runtime import (
     LeaguePairScheduler,
     WatchdogTrip,
 )
+from .specialist_bridge import (
+    SpecialistCheckpoint,
+    SpecialistChronicleBridge,
+    parse_generation_id,
+)
 from .specialists import OpeningBucket, SpecialistArchive, SpecialistRecord
+from .strength_bridge import PositionObservation, StrengthCapturePolicy, StrengthEvidenceBridge
 from .strength_lab import (
     EngineGateAction,
     EngineGateDecision,
@@ -110,6 +117,8 @@ __all__ = [
     "OpenTreePolicyTrialManager",
     "PolicyTrial",
     "TrialResult",
+    "ChampionCheckpoint",
+    "PromotionChronicleBridge",
     "ResourceBudget",
     "ResourceController",
     "ResourceSample",
@@ -121,9 +130,15 @@ __all__ = [
     "LeagueGameStatus",
     "LeaguePairScheduler",
     "WatchdogTrip",
+    "SpecialistCheckpoint",
+    "SpecialistChronicleBridge",
+    "parse_generation_id",
     "OpeningBucket",
     "SpecialistArchive",
     "SpecialistRecord",
+    "PositionObservation",
+    "StrengthCapturePolicy",
+    "StrengthEvidenceBridge",
     "EngineGateAction",
     "EngineGateDecision",
     "EngineRevisionGate",
