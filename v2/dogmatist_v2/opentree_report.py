@@ -103,7 +103,7 @@ class OpenTreeExperimentReport:
 
     Verdicts are deliberately conservative:
     - fail: material held-out strength regression;
-    - watch: insufficient rounds, collapse, poor branch survival, or no graph growth;
+    - watch: insufficient rounds/evaluation, collapse, poor branch survival, or no graph growth;
     - pass: strength-safe with measurable healthy tree behavior.
 
     The report is an experiment gate, not a chess-rating estimator.
@@ -114,16 +114,20 @@ class OpenTreeExperimentReport:
         traces: Iterable[OpenTreeRoundTrace] = (),
         *,
         minimum_rounds: int = 4,
+        minimum_arena_games: int = 12,
         max_strength_drop: float = 0.06,
         minimum_branch_survival: float = 0.12,
     ) -> None:
         if minimum_rounds < 2:
             raise ValueError("minimum_rounds must be >= 2")
+        if minimum_arena_games < 2 or minimum_arena_games % 2 != 0:
+            raise ValueError("minimum_arena_games must be an even number >= 2")
         if not 0.0 <= max_strength_drop <= 0.5:
             raise ValueError("max_strength_drop must be in [0, 0.5]")
         if not 0.0 <= minimum_branch_survival <= 1.0:
             raise ValueError("minimum_branch_survival must be in [0, 1]")
         self.minimum_rounds = minimum_rounds
+        self.minimum_arena_games = minimum_arena_games
         self.max_strength_drop = max_strength_drop
         self.minimum_branch_survival = minimum_branch_survival
         self._traces: list[OpenTreeRoundTrace] = []
@@ -159,13 +163,19 @@ class OpenTreeExperimentReport:
 
         reasons: list[str] = []
         verdict = "pass"
-        if strength_delta < -self.max_strength_drop:
+        enough_strength_evidence = all(
+            trace.arena_games >= self.minimum_arena_games for trace in self._traces
+        )
+        if enough_strength_evidence and strength_delta < -self.max_strength_drop:
             verdict = "fail"
             reasons.append("held-out strength regression exceeds budget")
         else:
             if len(self._traces) < self.minimum_rounds:
                 verdict = "watch"
                 reasons.append("not enough rounds for migration evidence")
+            if not enough_strength_evidence:
+                verdict = "watch"
+                reasons.append("not enough paired Arena evidence in every round")
             if last.collapse_warning:
                 verdict = "watch"
                 reasons.append("opening concentration warning remains active")
