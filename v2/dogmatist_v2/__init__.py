@@ -26,7 +26,16 @@ from .live_bridge import (
     TeacherSearchBudget,
     cp_to_value,
 )
+from .live_compute import ComputeSnapshot, HeartbeatComputeClock
+from .live_cycle_override import LiveStrengthCycleOverride
+from .live_league_guard import (
+    DrainedArenaResult,
+    LiveLeagueDrainOverride,
+    LiveLeagueDrainState,
+    build_budget_aware_population_arena,
+)
 from .live_replay import LiveReplayMixSampler, LiveReplayOverride, ReplayBatchQuota
+from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveReplayExample, LiveStrengthCoordinator, LiveStrengthRoundReport
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
@@ -118,9 +127,18 @@ __all__ = [
     "TeacherReplayTarget",
     "TeacherSearchBudget",
     "cp_to_value",
+    "ComputeSnapshot",
+    "HeartbeatComputeClock",
+    "LiveStrengthCycleOverride",
+    "DrainedArenaResult",
+    "LiveLeagueDrainOverride",
+    "LiveLeagueDrainState",
+    "build_budget_aware_population_arena",
     "LiveReplayMixSampler",
     "LiveReplayOverride",
     "ReplayBatchQuota",
+    "LiveEvolutionRunReport",
+    "LiveEvolutionRunner",
     "LiveReplayExample",
     "LiveStrengthCoordinator",
     "LiveStrengthRoundReport",
