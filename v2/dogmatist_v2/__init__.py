@@ -8,6 +8,11 @@ from .opentree_policy import (
     OpenTreePolicy,
     TreeHealth,
 )
+from .opentree_report import (
+    OpenTreeExperimentReport,
+    OpenTreeExperimentSummary,
+    OpenTreeRoundTrace,
+)
 from .opentree_trials import OpenTreePolicyTrialManager, PolicyTrial, TrialResult
 from .resource import ResourceBudget, ResourceController, ResourceSample
 from .specialists import OpeningBucket, SpecialistArchive, SpecialistRecord
@@ -24,6 +29,9 @@ __all__ = [
     "OpenTreeCurriculumController",
     "OpenTreePolicy",
     "TreeHealth",
+    "OpenTreeExperimentReport",
+    "OpenTreeExperimentSummary",
+    "OpenTreeRoundTrace",
     "OpenTreePolicyTrialManager",
     "PolicyTrial",
     "TrialResult",
