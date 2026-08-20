@@ -1,8 +1,10 @@
 import json
+import random
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from dogmatist_v2.live_replay import LiveReplayMixSampler
 from dogmatist_v2.live_runtime_overlay import LiveStrengthCoordinator
 from dogmatist_v2.strength_store import HardPositionEvidence, StrengthStore
 
@@ -41,6 +43,7 @@ class FakeMemory:
         )
         self.added_games = []
         self.insights = []
+        self.replay_calls = []
 
     def seed_selfplay(self, game_id="g1", generation=15):
         self.conn.execute(
@@ -75,6 +78,21 @@ class FakeMemory:
 
     def active_specialists(self, limit=64):
         return []
+
+    def replay_sample(
+        self,
+        batch_size,
+        recent_fraction=0.35,
+        *,
+        opening_names=None,
+        opening_fraction=0.0,
+        generations=None,
+    ):
+        self.replay_calls.append((batch_size, recent_fraction, opening_names, opening_fraction, generations))
+        return self.conn.execute(
+            "SELECT * FROM examples ORDER BY id DESC LIMIT ?",
+            (batch_size,),
+        ).fetchall()
 
     def add_game(self, **kwargs):
         gid = f"teacher-{len(self.added_games) + 1}"
@@ -198,3 +216,28 @@ def test_pretraining_stage_is_read_only_for_live_replay_by_default(tmp_path):
         assert report.teacher_examples == 0
         assert report.teacher_game_ids == ()
         assert memory.added_games == []
+
+
+def test_coordinator_can_wrap_existing_trainer_replay_without_replacing_trainer(tmp_path):
+    memory = FakeMemory()
+    memory.seed_selfplay()
+    runtime = FakeRuntime(memory)
+    with StrengthStore(tmp_path / "strength.sqlite3") as store:
+        coordinator = LiveStrengthCoordinator(runtime, store, board_factory=lambda fen: fen)
+        coordinator.capture_saved_games(["g1"], round_index=6, observed_at=NOW)
+        _, recipe = coordinator.build_recipe(targeted_examples=12, hard_position_bucket_cap=12)
+        original = memory.replay_sample.__func__
+        with coordinator.training_override(
+            recipe,
+            sampler=LiveReplayMixSampler(rng=random.Random(2)),
+        ):
+            # This is the exact shape ContinualTrainer uses in production.
+            rows = memory.replay_sample(
+                6,
+                0.35,
+                opening_names=["B20"],
+                opening_fraction=0.65,
+                generations=None,
+            )
+            assert rows
+        assert memory.replay_sample.__func__ is original
