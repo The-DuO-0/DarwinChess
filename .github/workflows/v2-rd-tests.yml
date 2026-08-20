@@ -2,9 +2,12 @@ name: DogMatist v2 R&D tests
 
 on:
   push:
-    branches: [v2-league-engine]
+    branches:
+      - 'v2-*'
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - v2-league-engine
     paths:
       - 'v2/**'
       - '.github/workflows/v2-rd-tests.yml'
