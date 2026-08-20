@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
 from .live_bridge import AlphaBetaTeacherAdapter, LiveGameEvidenceBridge, TeacherReplayTarget
+from .live_replay import LiveReplayMixSampler, LiveReplayOverride
 from .strength_lab import StrengthLabController, StrengthLabPlan
 from .strength_pipeline import StrengthPipelinePlanner, StrengthRoundRecipe
 from .strength_store import StrengthStore
@@ -179,6 +180,20 @@ class LiveStrengthCoordinator:
             hard_position_bucket_cap=hard_position_bucket_cap,
         )
         return plan, recipe
+
+    def training_override(
+        self,
+        recipe: StrengthRoundRecipe,
+        *,
+        sampler: LiveReplayMixSampler | None = None,
+    ) -> LiveReplayOverride:
+        """Return the temporary replay hook for the existing ContinualTrainer.
+
+        Production integration can now be only two lines around the existing
+        ``train_population`` call. The trainer, optimizer, branch focus and tensor
+        pipeline stay untouched; only the rows returned by MemoryStore are mixed.
+        """
+        return LiveReplayOverride(self.memory, recipe, sampler=sampler)
 
     def _default_board_factory(self) -> Callable[[str], Any]:
         if self._board_factory is not None:
