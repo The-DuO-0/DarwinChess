@@ -47,16 +47,12 @@ def test_normal_active_heartbeat_time_counts_even_if_work_is_slow():
         assert clock.pulse() == 0.0
     assert clock.elapsed_seconds == 12.0
     assert not clock.expired
-    now.advance(18)
-    # Keep a heartbeat within the threshold to represent an active worker.
-    for _ in range(2):
-        # The first 9 seconds count as active rather than being classified sleep.
-        pass
-    # Advance in legal heartbeat-sized chunks for the rest.
-    now.value = 21.0
-    clock.pulse()
-    now.value = 30.0
-    clock.pulse()
+
+    # As long as the heartbeat continues, all remaining runnable time counts.
+    for _ in range(18):
+        now.advance(1)
+        assert clock.pulse() == 0.0
+    assert clock.elapsed_seconds == 30.0
     assert clock.expired
 
 
