@@ -13,13 +13,13 @@ When the active-compute budget is reached:
 3. if one leg of a colour-balanced pair has started, its reverse-colour fairness leg also finishes naturally;
 4. only then may the run stop.
 
-A game process may be terminated only by the independent bug watchdog. Initial copied-state thresholds are intentionally generous:
+A game process may be terminated only by the independent bug watchdog. The copied-state safety floor is intentionally extreme:
 
-- 30 minutes with no completed move/search progress;
-- 2 hours total for one single game as an emergency abnormal-game ceiling;
+- **at least 60 minutes** with no completed move/search progress;
+- **at least 24 hours** total for one single game as a last-resort process-leak ceiling;
 - terminate, wait 2 seconds, then kill only if still alive.
 
-A healthy game finishing after the nominal Night budget is normal and must not count as a validation failure.
+Older or accidental configuration values cannot lower those two safety floors. They may only be raised after real-Mac measurements. A healthy game finishing after the nominal Night budget is normal and must not count as a validation failure.
 
 ## Safety model
 
