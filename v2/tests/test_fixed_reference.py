@@ -152,3 +152,57 @@ def test_fixed_reference_evaluator_scores_only_complete_colour_pairs(tmp_path):
     evidence = result.to_round_evidence(champion_generation=15, promoted=False)
     assert evidence.fixed_reference_score == 1.0
     assert evidence.paired_games == 4
+
+
+def test_live_gen15_and_frozen_gen15_use_different_worker_identities(tmp_path):
+    live = tmp_path / "live-gen15.pt"
+    frozen_source = tmp_path / "frozen-gen15-source.pt"
+    live.write_bytes(b"live-gen15-now")
+    frozen_source.write_bytes(b"older-frozen-gen15")
+    reference = FrozenReferenceManager(tmp_path / "ref").freeze(
+        frozen_source,
+        generation=15,
+        created_at=datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    seen = []
+
+    def worker(task, queue):
+        seen.append((task.white_generation, task.black_generation, task.white_checkpoint, task.black_checkpoint))
+        row = LiveLeagueWorkerResult(
+            game_id=task.game_id,
+            pairing_id=task.pairing_id,
+            leg=task.leg,
+            white_generation=task.white_generation,
+            black_generation=task.black_generation,
+            opening_name=task.opening_name,
+            result="1/2-1/2",
+            termination="draw",
+            pgn="",
+            plies=12,
+            metadata={},
+            elapsed_s=1.0,
+        )
+        queue.put({"kind": "finished", "game_id": task.game_id, "result": row})
+
+    result = FixedReferenceEvaluator(
+        clock=FakeClock(),
+        parallel_games=2,
+        mp_context=FakeContext(),
+        worker_target=worker,
+    ).evaluate(
+        round_index=8,
+        subject_generation=15,
+        subject_checkpoint=str(live),
+        reference=reference,
+        config={},
+        openings=[("fen-a", "B20")],
+        depth=2,
+        max_plies=100,
+    )
+
+    assert result.games == 2
+    assert result.score == 0.5
+    assert len(seen) == 2
+    assert all(white != black for white, black, *_ in seen)
+    assert any(str(live) == white_cp for _, _, white_cp, _ in seen)
+    assert any(reference.checkpoint_path == white_cp for _, _, white_cp, _ in seen)
