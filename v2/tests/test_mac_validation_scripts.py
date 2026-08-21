@@ -95,5 +95,28 @@ def test_validation_invariants_accept_explicit_three_worker_copy_run():
     checks = runmod._validation_invariants(
         telemetry,
         expected_parallel_games=3,
+        expect_budget_probe=False,
+    )
+    assert all(checks.values())
+
+
+def test_validation_invariants_require_budget_probe_event_and_clean_finish():
+    runmod = _load("dogmatist_run_validation_budget_probe", "run_copied_state.py")
+    telemetry = ValidationTelemetry(
+        max_parallel_games=2,
+        copy_validation={
+            "enabled": True,
+            "teacher_persistence": False,
+            "league_parallel_games": 2,
+            "expire_on_league_start": True,
+        },
+        watchdog={"budget_interrupts_games": False},
+        final_compute={"expired": True},
+    )
+    telemetry.phases["validation_budget_expired"] = 1
+    checks = runmod._validation_invariants(
+        telemetry,
+        expected_parallel_games=2,
+        expect_budget_probe=True,
     )
     assert all(checks.values())
