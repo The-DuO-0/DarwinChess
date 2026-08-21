@@ -18,6 +18,11 @@ from .dynasty import (
 )
 from .hard_positions import HardPositionCandidate, HardPositionMiner
 from .league import Candidate, MatchResult, LeagueTable, select_survivors
+from .live_arena_guard import (
+    LiveArenaDrainOverride,
+    LiveArenaDrainState,
+    build_budget_aware_arena,
+)
 from .live_bridge import (
     AlphaBetaTeacherAdapter,
     CapturedHardPosition,
@@ -34,6 +39,15 @@ from .live_league_guard import (
     LiveLeagueDrainState,
     build_budget_aware_population_arena,
 )
+from .live_parallel_league import (
+    LiveLeagueProcessPool,
+    LiveLeagueWorkerResult,
+    LiveLeagueWorkerTask,
+    LiveParallelLeagueExecution,
+    choose_live_league_parallelism,
+    league_worker_threads,
+)
+from .live_parallel_population import LiveParallelLeagueOverride, build_parallel_population_arena
 from .live_replay import LiveReplayMixSampler, LiveReplayOverride, ReplayBatchQuota
 from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveReplayExample, LiveStrengthCoordinator, LiveStrengthRoundReport
@@ -121,6 +135,9 @@ __all__ = [
     "MatchResult",
     "LeagueTable",
     "select_survivors",
+    "LiveArenaDrainOverride",
+    "LiveArenaDrainState",
+    "build_budget_aware_arena",
     "AlphaBetaTeacherAdapter",
     "CapturedHardPosition",
     "LiveGameEvidenceBridge",
@@ -134,6 +151,14 @@ __all__ = [
     "LiveLeagueDrainOverride",
     "LiveLeagueDrainState",
     "build_budget_aware_population_arena",
+    "LiveLeagueProcessPool",
+    "LiveLeagueWorkerResult",
+    "LiveLeagueWorkerTask",
+    "LiveParallelLeagueExecution",
+    "choose_live_league_parallelism",
+    "league_worker_threads",
+    "LiveParallelLeagueOverride",
+    "build_parallel_population_arena",
     "LiveReplayMixSampler",
     "LiveReplayOverride",
     "ReplayBatchQuota",
