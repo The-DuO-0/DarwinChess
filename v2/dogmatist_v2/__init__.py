@@ -16,6 +16,13 @@ from .dynasty import (
     HistoricalRole,
     build_lineage_path,
 )
+from .fixed_reference import (
+    FixedReferenceEvaluator,
+    FixedReferenceResult,
+    FrozenReferenceManager,
+    FrozenStrengthReference,
+    checkpoint_sha256,
+)
 from .hard_positions import HardPositionCandidate, HardPositionMiner
 from .league import Candidate, MatchResult, LeagueTable, select_survivors
 from .live_arena_guard import (
@@ -33,6 +40,12 @@ from .live_bridge import (
 )
 from .live_compute import ComputeSnapshot, HeartbeatComputeClock
 from .live_cycle_override import LiveStrengthCycleOverride
+from .live_fixed_reference import (
+    LiveFixedReferenceCoordinator,
+    LiveFixedReferenceCycleOverride,
+    LiveFixedReferenceReport,
+)
+from .live_game_watchdog import LiveGameWatchdogPolicy, install_live_game_watchdog_policy
 from .live_league_guard import (
     DrainedArenaResult,
     LiveLeagueDrainOverride,
@@ -129,6 +142,11 @@ __all__ = [
     "HistoricalEvent",
     "HistoricalRole",
     "build_lineage_path",
+    "FixedReferenceEvaluator",
+    "FixedReferenceResult",
+    "FrozenReferenceManager",
+    "FrozenStrengthReference",
+    "checkpoint_sha256",
     "HardPositionCandidate",
     "HardPositionMiner",
     "Candidate",
@@ -147,6 +165,11 @@ __all__ = [
     "ComputeSnapshot",
     "HeartbeatComputeClock",
     "LiveStrengthCycleOverride",
+    "LiveFixedReferenceCoordinator",
+    "LiveFixedReferenceCycleOverride",
+    "LiveFixedReferenceReport",
+    "LiveGameWatchdogPolicy",
+    "install_live_game_watchdog_policy",
     "DrainedArenaResult",
     "LiveLeagueDrainOverride",
     "LiveLeagueDrainState",
