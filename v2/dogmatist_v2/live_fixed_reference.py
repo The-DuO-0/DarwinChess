@@ -66,6 +66,35 @@ def _first_bool_for_keys(value: Any, keys: tuple[str, ...]) -> bool | None:
     return None
 
 
+class _ReferenceClockView:
+    """Make user safe-stop behave like admission drain for reference games too."""
+
+    def __init__(self, clock: Any, stop_requested: Callable[[], bool]) -> None:
+        self.clock = clock
+        self.stop_requested = stop_requested
+
+    @property
+    def expired(self) -> bool:
+        return bool(self.stop_requested()) or bool(self.clock.expired)
+
+    @property
+    def stop_reason(self) -> str | None:
+        if self.stop_requested():
+            return "user_stop"
+        return "compute_budget_exhausted" if bool(self.clock.expired) else None
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return float(self.clock.elapsed_seconds)
+
+    @property
+    def remaining_seconds(self) -> float:
+        return float(self.clock.remaining_seconds)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.clock, name)
+
+
 class LiveFixedReferenceCoordinator:
     """Measure each round's strongest available subject on one frozen ruler."""
 
@@ -90,6 +119,7 @@ class LiveFixedReferenceCoordinator:
         self.pair_count = int(pair_count)
         self.watchdog_policy = watchdog_policy or LiveGameWatchdogPolicy()
         self.stop_requested = stop_requested or (lambda: False)
+        self.reference_clock = _ReferenceClockView(clock, self.stop_requested)
         self.status_callback = status_callback
         self.reference: FrozenStrengthReference | None = None
         self.last_report: LiveFixedReferenceReport | None = None
@@ -126,9 +156,8 @@ class LiveFixedReferenceCoordinator:
         return self.reference
 
     def _subject_generation(self, raw_result: Any) -> int:
-        # League winner is the most useful signal under a long-lived Champion: it
-        # can improve for several rounds before finally being strong enough to win
-        # the held-out promotion Arena.
+        # The League winner is the useful signal under a long-lived Champion: it
+        # can improve for several rounds before finally winning promotion.
         subject = _first_int_for_keys(
             raw_result,
             (
@@ -153,14 +182,26 @@ class LiveFixedReferenceCoordinator:
         after = _first_int_for_keys(raw_result, ("champion_after",))
         return before is not None and after is not None and before != after
 
-    def _openings(self, round_index: int) -> list[tuple[str, str]]:
+    def _opening_curriculum_class(self) -> type:
+        """Resolve the real production OpeningCurriculum through overlay wrappers."""
         runtime_module = importlib.import_module(self.runtime.__class__.__module__)
         population_cls = getattr(runtime_module, "PopulationArena")
-        population_module = importlib.import_module(population_cls.__module__)
-        curriculum_cls = getattr(population_module, "OpeningCurriculum")
+        # During a cycle PopulationArena may be Parallel(BudgetAware(Production)).
+        # Walk the MRO until we reach a module that actually owns the curriculum.
+        for cls in getattr(population_cls, "__mro__", (population_cls,)):
+            try:
+                module = importlib.import_module(cls.__module__)
+            except Exception:
+                continue
+            curriculum = getattr(module, "OpeningCurriculum", None)
+            if curriculum is not None:
+                return curriculum
+        raise RuntimeError("could not resolve production OpeningCurriculum")
+
+    def _openings(self, round_index: int) -> list[tuple[str, str]]:
+        curriculum_cls = self._opening_curriculum_class()
         base_seed = int(self.runtime.config.get("project", {}).get("seed", 0))
-        # The frozen-reference opening set must be deterministic for a given round
-        # and independent from whoever happens to be Champion.
+        # Same deterministic recipe regardless of who currently holds the throne.
         curriculum = curriculum_cls(seed=base_seed + 910_009 + int(round_index) * 97)
         rows = curriculum.arena_pairs(self.pair_count)
         return [(board.fen(), str(opening)) for board, opening in rows]
@@ -180,8 +221,20 @@ class LiveFixedReferenceCoordinator:
         subject_checkpoint = self.checkpoint_for_generation(subject)
         openings = self._openings(round_index)
         lcfg = self.runtime.config.get("league", {})
-        depth = int(lcfg.get("depth", self.runtime.config.get("arena", {}).get("depth", self.runtime.config["search"]["depth"])))
-        max_plies = int(lcfg.get("max_game_plies", self.runtime.config.get("arena", {}).get("max_game_plies", 220)))
+        depth = int(
+            lcfg.get(
+                "depth",
+                self.runtime.config.get("arena", {}).get(
+                    "depth", self.runtime.config["search"]["depth"]
+                ),
+            )
+        )
+        max_plies = int(
+            lcfg.get(
+                "max_game_plies",
+                self.runtime.config.get("arena", {}).get("max_game_plies", 220),
+            )
+        )
         parallel = int(self.runtime.config.get("runtime", {}).get("league_parallel_games", 2) or 2)
         if parallel not in (2, 3):
             parallel = 2
@@ -191,7 +244,7 @@ class LiveFixedReferenceCoordinator:
                 self.status_callback({"phase": "fixed_reference", "fixed_reference": snapshot})
 
         evaluator = FixedReferenceEvaluator(
-            clock=self.clock,
+            clock=self.reference_clock,
             parallel_games=parallel,
             hard_game_timeout_seconds=self.watchdog_policy.emergency_game_seconds,
             stall_timeout_seconds=self.watchdog_policy.stall_seconds,
@@ -215,12 +268,13 @@ class LiveFixedReferenceCoordinator:
             champion_generation=champion,
             promoted=self._promoted(raw_result),
         )
-        mode = self.store.round_history(limit=1)
-        # Record the mode the next Strength planning pass will derive from all
-        # evidence including this row. This is metadata only; planning always reads
-        # the actual round history again.
+        # Metadata mode mirrors what the next Strength planning pass will infer
+        # once this new fixed-reference evidence is visible.
         from .strength_lab import StrengthLabController
-        planned_mode = StrengthLabController().plan((*self.store.round_history(), evidence)).mode
+
+        planned_mode = StrengthLabController().plan(
+            (*self.store.round_history(), evidence)
+        ).mode
         self.store.record_round(
             evidence,
             mode=planned_mode,
@@ -262,19 +316,20 @@ class LiveFixedReferenceCycleOverride:
             def make_wrapper(method: Any, method_name: str):
                 def wrapped(*args: Any, **kwargs: Any) -> Any:
                     raw = method(*args, **kwargs)
-                    # In a live runtime the runner calls one cycle method once. Do
-                    # not double-measure if a public wrapper internally delegates to
-                    # an already-wrapped private method.
-                    marker = None
-                    if isinstance(raw, dict):
-                        marker = raw.get("_v2_fixed_reference_measured")
+                    # Public evolve_cycle may delegate to an already-wrapped private
+                    # cycle. The marker prevents a second reference match.
+                    marker = raw.get("_v2_fixed_reference_measured") if isinstance(raw, dict) else None
                     if not marker:
                         self._round_counter += 1
-                        report = self.coordinator.evaluate_cycle(raw, round_index=self._round_counter)
+                        report = self.coordinator.evaluate_cycle(
+                            raw,
+                            round_index=self._round_counter,
+                        )
                         if isinstance(raw, dict):
                             raw["_v2_fixed_reference_measured"] = True
                             raw["fixed_reference"] = report.ui_payload()
                     return raw
+
                 wrapped.__name__ = f"v2_fixed_reference_{method_name}"
                 return wrapped
 
