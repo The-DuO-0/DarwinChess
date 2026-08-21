@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from time import monotonic
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 
 class ComputeBudgetClock:
@@ -12,10 +12,6 @@ class ComputeBudgetClock:
     The clock advances only while ``resume()`` is active.  This is intentionally
     different from a wall-clock deadline: a sleeping/suspended/explicitly paused
     run can resume later without losing its remaining compute budget.
-
-    Production integrations should pause this clock whenever the run itself is
-    paused.  The default time source is ``time.monotonic`` so wall-clock jumps do
-    not affect the budget.
     """
 
     def __init__(
@@ -84,8 +80,6 @@ class GameState(str, Enum):
 
 @dataclass(frozen=True)
 class ColorPairing:
-    """A two-game colour-balanced comparison between the same opponents."""
-
     pairing_id: str
     first_white_id: str
     first_black_id: str
@@ -188,8 +182,6 @@ class WatchdogTrip:
 
 
 class GameWatchdog:
-    """Detect a permanently stalled or excessively long League game."""
-
     def __init__(self, *, hard_timeout_seconds: float, stall_timeout_seconds: float) -> None:
         if hard_timeout_seconds <= 0 or stall_timeout_seconds <= 0:
             raise ValueError("watchdog timeouts must be positive")
@@ -208,24 +200,23 @@ class GameWatchdog:
         return None
 
 
+def _clock_stop_reason(clock: Any) -> str:
+    reason = getattr(clock, "stop_reason", None)
+    return str(reason) if reason else "compute_budget_exhausted"
+
+
 @dataclass
 class LeaguePairScheduler:
     """Admission controller for 2-3 parallel colour-balanced League games.
 
-    When the compute budget expires, admission switches to *drain* mode.  No new
-    pairings are started, but the missing colour leg of every pairing that was
-    already in flight is still admitted.  Therefore a timed run stops after the
-    current colour pair(s), rather than continuing the rest of the tournament or
-    outer evolution loop.
-
-    ``poll_watchdogs`` marks a stuck game terminal and returns a trip to the
-    integration layer, which must terminate/kill the corresponding worker
-    process.  Using a process boundary is important: cancelling a Python future
-    is not sufficient if the chess search itself is wedged.
+    When the clock says stop, admission switches to drain mode. No new pairings
+    are opened, but missing reverse-colour legs of every already-started pairing
+    are still admitted. The clock may represent a compute budget or a user safe-
+    stop request; ``stop_reason`` is propagated when available.
     """
 
     pairings: Iterable[ColorPairing]
-    clock: ComputeBudgetClock
+    clock: Any
     parallel_games: int = 2
     hard_game_timeout_seconds: float = 20 * 60
     stall_timeout_seconds: float = 4 * 60
@@ -276,11 +267,11 @@ class LeaguePairScheduler:
             self._stop_reason = reason
 
     def _observe_budget(self) -> None:
-        if self.clock.expired:
-            self.request_drain("compute_budget_exhausted")
+        if bool(self.clock.expired):
+            self.request_drain(_clock_stop_reason(self.clock))
 
     def _start_status(self, status: LeagueGameStatus) -> LeagueGameStatus:
-        now = self.clock.elapsed_seconds
+        now = float(self.clock.elapsed_seconds)
         status.start(now)
         self._active[status.spec.game_id] = status
         return status
@@ -305,7 +296,6 @@ class LeaguePairScheduler:
         return None
 
     def poll_startable(self) -> list[LeagueGameStatus]:
-        """Return newly admitted games up to the configured 2-3 game cap."""
         self._observe_budget()
         started: list[LeagueGameStatus] = []
         while len(self._active) < self.parallel_games:
@@ -320,7 +310,7 @@ class LeaguePairScheduler:
     def report_progress(self, game_id: str, plies: int) -> None:
         game = self._active.get(game_id)
         if game is not None:
-            game.report_progress(plies, self.clock.elapsed_seconds)
+            game.report_progress(plies, float(self.clock.elapsed_seconds))
 
     def _take_active(self, game_id: str) -> LeagueGameStatus:
         try:
@@ -330,20 +320,20 @@ class LeaguePairScheduler:
 
     def complete(self, game_id: str, *, result: str | None = None) -> LeagueGameStatus:
         game = self._take_active(game_id)
-        game.finish(self.clock.elapsed_seconds, result=result)
+        game.finish(float(self.clock.elapsed_seconds), result=result)
         self._terminal[game_id] = game
         self._observe_budget()
         return game
 
     def fail(self, game_id: str, reason: str) -> LeagueGameStatus:
         game = self._take_active(game_id)
-        game.fail(self.clock.elapsed_seconds, reason)
+        game.fail(float(self.clock.elapsed_seconds), reason)
         self._terminal[game_id] = game
         self._observe_budget()
         return game
 
     def poll_watchdogs(self) -> list[WatchdogTrip]:
-        now = self.clock.elapsed_seconds
+        now = float(self.clock.elapsed_seconds)
         trips: list[WatchdogTrip] = []
         for game_id, game in list(self._active.items()):
             trip = self._watchdog.check(game, now)
@@ -376,7 +366,7 @@ class LeaguePairScheduler:
         return all(not self._pending[pair_id] for pair_id in self._pair_order)
 
     def snapshot(self) -> dict[str, object]:
-        now = self.clock.elapsed_seconds
+        now = float(self.clock.elapsed_seconds)
         active = []
         for game in self._active.values():
             active.append(
