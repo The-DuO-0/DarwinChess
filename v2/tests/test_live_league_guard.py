@@ -76,6 +76,17 @@ def test_budget_guard_finishes_both_colors_then_stops_before_next_seed():
     assert arena._archive_specialists(1, object(), 15) == {}
 
 
+def test_budget_wrapper_preserves_base_module_for_next_parallel_wrapper():
+    original_module = FakePopulationArena.__module__
+    wrapped = build_budget_aware_population_arena(
+        FakePopulationArena,
+        clock=AlwaysExpiredClock(),
+        state=LiveLeagueDrainState(),
+    )
+    assert wrapped.__module__ == original_module
+    assert wrapped.__module__ != "dogmatist_v2.live_league_guard"
+
+
 class FakeMemory:
     def __init__(self):
         self.updated = []
