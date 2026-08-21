@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import sys
 
 
 V2_ROOT = Path(__file__).resolve().parents[1]
@@ -8,10 +9,16 @@ OVERLAY = V2_ROOT / "integration" / "production_overlay"
 
 def _load_installer():
     path = OVERLAY / "install_on_copy.py"
-    spec = importlib.util.spec_from_file_location("dogmatist_overlay_installer", path)
+    name = "dogmatist_overlay_installer"
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
