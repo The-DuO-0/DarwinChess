@@ -159,6 +159,7 @@ def run_live_evolution(
 
     copy_validation = os.environ.get("DOGMATIST_V2_COPY_VALIDATION", "") == "1"
     copy_parallel_games = 2
+    expire_on_league_start = False
     if copy_validation:
         isolated_home = Path(os.environ.get("HOME", "")).expanduser().resolve()
         expected_state = (isolated_home / ".darwinchess").resolve()
@@ -168,6 +169,9 @@ def run_live_evolution(
                 f"({state_root} != {expected_state})"
             )
         copy_parallel_games = _copy_validation_parallel_games()
+        expire_on_league_start = (
+            os.environ.get("DOGMATIST_V2_COPY_EXPIRE_ON_LEAGUE_START", "") == "1"
+        )
         if opts.persist_teacher:
             progress("[dog_matist][copy-validation] forcing teacher replay persistence OFF")
         opts = replace(opts, persist_teacher=False)
@@ -179,6 +183,7 @@ def run_live_evolution(
                     "state_root": str(state_root),
                     "teacher_persistence": False,
                     "league_parallel_games": copy_parallel_games,
+                    "expire_on_league_start": expire_on_league_start,
                 },
             }, ensure_ascii=False)
         )
@@ -203,6 +208,31 @@ def run_live_evolution(
         }, ensure_ascii=False)
     )
 
+    expiry_probe_triggered = False
+
+    def live_league_status(payload: dict[str, object]) -> None:
+        nonlocal expiry_probe_triggered
+        if expire_on_league_start and not expiry_probe_triggered:
+            league = payload.get("league")
+            active = league.get("active_games") if isinstance(league, dict) else None
+            if isinstance(active, list) and active:
+                expiry_probe_triggered = True
+                clock.request_expiry()
+                progress(
+                    "[dog_matist][copy-validation] injected compute-budget expiry after League start; "
+                    "active games must finish naturally"
+                )
+                progress(
+                    "DOGMATIST_UI " + json.dumps({
+                        "phase": "validation_budget_expired",
+                        "reason": "copied_state_league_start_probe",
+                        "active_games_at_expiry": len(active),
+                        "compute": clock.snapshot(),
+                    }, ensure_ascii=False, default=str)
+                )
+        if league_status_callback is not None:
+            league_status_callback(payload)
+
     def fixed_status(payload: dict[str, object]) -> None:
         progress("DOGMATIST_UI " + json.dumps(payload, ensure_ascii=False, default=str))
         if league_status_callback is not None:
@@ -220,7 +250,7 @@ def run_live_evolution(
             strength_fail_open=opts.strength_fail_open,
             enable_parallel_league=opts.enable_parallel_league,
             parallel_league_fail_open=opts.parallel_league_fail_open,
-            league_status_callback=league_status_callback,
+            league_status_callback=live_league_status,
             handle_sigint=opts.handle_sigint,
         )
 
