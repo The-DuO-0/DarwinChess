@@ -102,11 +102,14 @@ def build_budget_aware_population_arena(
 class LiveLeagueDrainOverride:
     """Temporary production hook for safe stop after the current color pair.
 
-    It patches only the runtime module's `PopulationArena` symbol plus two runtime
-    instance methods for the duration of one cycle:
+    It patches only the runtime module's `PopulationArena` symbol plus narrow
+    runtime/memory methods for the duration of one cycle:
 
     - partial League -> no specialist harvest;
-    - exhausted budget -> no final promotion Arena.
+    - drained League -> no final promotion Arena;
+    - candidates from an incomplete round are labelled aborted/budget-drained,
+      not chessically rejected;
+    - the population round is persisted as `budget_drained`, not `complete`.
 
     The original production objects are restored on exit, including exceptions.
     """
@@ -130,11 +133,25 @@ class LiveLeagueDrainOverride:
         self._harvest_had_instance_attr = False
         self._gate_instance_value: Any = None
         self._harvest_instance_value: Any = None
+        self._memory_originals: dict[str, Any] = {}
+        self._memory_had_attrs: dict[str, bool] = {}
+        self._memory_previous_attrs: dict[str, Any] = {}
 
     def _module(self) -> Any:
         if self.runtime_module is not None:
             return self.runtime_module
         return importlib.import_module(self.runtime.__class__.__module__)
+
+    def _patch_memory_method(self, name: str, wrapper: Any) -> None:
+        memory = getattr(self.runtime, "memory", None)
+        if memory is None or not hasattr(memory, name):
+            return
+        attrs = getattr(memory, "__dict__", {})
+        self._memory_had_attrs[name] = name in attrs
+        if name in attrs:
+            self._memory_previous_attrs[name] = attrs[name]
+        self._memory_originals[name] = getattr(memory, name)
+        setattr(memory, name, wrapper)
 
     def __enter__(self) -> "LiveLeagueDrainOverride":
         module = self._module()
@@ -161,7 +178,8 @@ class LiveLeagueDrainOverride:
 
         def guarded_gate(challenger_id: int, challenger: Any, *, games: int | None = None) -> Any:
             if self.state.draining or bool(self.clock.expired):
-                self.state.request_drain("compute_budget_exhausted")
+                if not self.state.draining:
+                    self.state.request_drain("compute_budget_exhausted")
                 memory = getattr(self.runtime, "memory", None)
                 if memory is not None and hasattr(memory, "update_generation"):
                     memory.update_generation(int(challenger_id), status="aborted")
@@ -171,7 +189,7 @@ class LiveLeagueDrainOverride:
                     memory.add_insight(
                         champion_id,
                         "budget_drain",
-                        f"Generation {challenger_id} final Arena skipped because the active compute budget expired after a complete color pair.",
+                        f"Generation {challenger_id} final Arena skipped because the League/evolution run entered safe-drain mode.",
                         self.state.ui_payload(),
                     )
                 return DrainedArenaResult()
@@ -179,7 +197,8 @@ class LiveLeagueDrainOverride:
 
         def guarded_harvest(*args: Any, **kwargs: Any) -> int:
             if self.state.draining or bool(self.clock.expired):
-                self.state.request_drain("compute_budget_exhausted")
+                if not self.state.draining:
+                    self.state.request_drain("compute_budget_exhausted")
                 return 0
             if original_harvest is None:
                 return 0
@@ -188,27 +207,83 @@ class LiveLeagueDrainOverride:
         self.runtime.gate_challenger = guarded_gate
         if original_harvest is not None:
             self.runtime._harvest_specialist_experience = guarded_harvest
+
+        memory = getattr(self.runtime, "memory", None)
+        if memory is not None:
+            original_update_generation = getattr(memory, "update_generation", None)
+            if original_update_generation is not None:
+                def guarded_update_generation(generation_id: int, **fields: Any) -> Any:
+                    if self.state.draining and fields.get("status") == "rejected":
+                        fields = dict(fields)
+                        fields["status"] = "aborted"
+                    return original_update_generation(generation_id, **fields)
+                self._patch_memory_method("update_generation", guarded_update_generation)
+
+            original_update_member = getattr(memory, "update_population_member", None)
+            if original_update_member is not None:
+                def guarded_update_member(round_id: int, generation: int, **fields: Any) -> Any:
+                    if self.state.draining and fields.get("status") == "rejected":
+                        fields = dict(fields)
+                        fields["status"] = "budget_drained"
+                    return original_update_member(round_id, generation, **fields)
+                self._patch_memory_method("update_population_member", guarded_update_member)
+
+            original_finish_round = getattr(memory, "finish_population_round", None)
+            if original_finish_round is not None:
+                def guarded_finish_round(round_id: int, status: str = "complete") -> Any:
+                    if self.state.draining and status == "complete":
+                        status = "budget_drained"
+                    return original_finish_round(round_id, status)
+                self._patch_memory_method("finish_population_round", guarded_finish_round)
+
         return self
+
+    def _restore_runtime_method(
+        self,
+        name: str,
+        *,
+        had_instance_attr: bool,
+        previous: Any,
+        original: Any,
+    ) -> None:
+        if had_instance_attr:
+            setattr(self.runtime, name, previous)
+            return
+        try:
+            delattr(self.runtime, name)
+        except AttributeError:
+            if original is not None:
+                setattr(self.runtime, name, original)
 
     def __exit__(self, *_: object) -> None:
         module = self.runtime_module
         if module is not None and self._base_population_arena is not None:
             module.PopulationArena = self._base_population_arena
 
-        if self._gate_had_instance_attr:
-            self.runtime.gate_challenger = self._gate_instance_value
-        else:
-            try:
-                delattr(self.runtime, "gate_challenger")
-            except AttributeError:
-                if self._original_gate is not None:
-                    self.runtime.gate_challenger = self._original_gate
-
+        self._restore_runtime_method(
+            "gate_challenger",
+            had_instance_attr=self._gate_had_instance_attr,
+            previous=self._gate_instance_value,
+            original=self._original_gate,
+        )
         if self._original_harvest is not None:
-            if self._harvest_had_instance_attr:
-                self.runtime._harvest_specialist_experience = self._harvest_instance_value
-            else:
-                try:
-                    delattr(self.runtime, "_harvest_specialist_experience")
-                except AttributeError:
-                    self.runtime._harvest_specialist_experience = self._original_harvest
+            self._restore_runtime_method(
+                "_harvest_specialist_experience",
+                had_instance_attr=self._harvest_had_instance_attr,
+                previous=self._harvest_instance_value,
+                original=self._original_harvest,
+            )
+
+        memory = getattr(self.runtime, "memory", None)
+        if memory is not None:
+            for name, original in self._memory_originals.items():
+                if self._memory_had_attrs.get(name, False):
+                    setattr(memory, name, self._memory_previous_attrs[name])
+                else:
+                    try:
+                        delattr(memory, name)
+                    except AttributeError:
+                        setattr(memory, name, original)
+        self._memory_originals.clear()
+        self._memory_had_attrs.clear()
+        self._memory_previous_attrs.clear()
