@@ -96,6 +96,11 @@ def build_budget_aware_population_arena(
             return super()._archive_specialists(round_id, table, champion_generation)
 
     BudgetAwarePopulationArena.__name__ = f"BudgetAware{base_arena_cls.__name__}"
+    # Keep provenance pointed at the real production population module. The next
+    # process-backed wrapper resolves LeagueTable/LeagueSummary/OpeningCurriculum
+    # from `base_arena_cls.__module__`; leaving the default nested-class module here
+    # incorrectly points it at dogmatist_v2.live_league_guard.
+    BudgetAwarePopulationArena.__module__ = base_arena_cls.__module__
     return BudgetAwarePopulationArena
 
 
