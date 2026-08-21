@@ -1,5 +1,5 @@
-import json
 from types import SimpleNamespace
+import json
 
 from dogmatist_v2.live_compute import HeartbeatComputeClock
 from dogmatist_v2.live_runner import LiveEvolutionRunner
@@ -49,6 +49,23 @@ class FakeRuntime:
         return {"cycle": self.cycles, "champion_before": 15, "champion_after": 15}
 
 
+class FixedPayloadRuntime(FakeRuntime):
+    def evolve_cycle(self):
+        self.cycles += 1
+        self.now.advance(2.0)
+        return {
+            "cycle": self.cycles,
+            "champion_before": 15,
+            "champion_after": 15,
+            "fixed_reference": {
+                "reference": {"generation": 15},
+                "subject_generation": 21,
+                "result": {"score": 0.625, "games": 4},
+                "trend": [{"round_index": 1, "score": 0.625, "games": 4}],
+            },
+        }
+
+
 def _clock(now, budget):
     return HeartbeatComputeClock(
         budget,
@@ -86,41 +103,23 @@ def test_runner_honors_explicit_cycle_limit_before_compute_budget():
     assert report.compute["remaining_seconds"] == 95.0
 
 
-def test_runner_surfaces_fixed_reference_and_hides_private_marker():
+def test_runner_forwards_fixed_reference_into_live_v2_and_cycle_complete_ui():
     now = FakeTime()
-
-    class FixedRuntime(FakeRuntime):
-        def evolve_cycle(self):
-            self.cycles += 1
-            self.now.advance(5.0)
-            return {
-                "cycle": self.cycles,
-                "champion_before": 15,
-                "champion_after": 15,
-                "_v2_fixed_reference_measured": True,
-                "fixed_reference": {
-                    "reference": {"reference_id": "g15-frozen", "generation": 15},
-                    "subject_generation": 27,
-                    "result": {"score": 0.625, "games": 4},
-                    "skipped_reason": None,
-                },
-            }
-
-    runtime = FixedRuntime(now)
+    runtime = FixedPayloadRuntime(now)
     module = SimpleNamespace(PopulationArena=DummyPopulationArena)
     messages = []
     report = LiveEvolutionRunner(runtime, _clock(now, 100.0), runtime_module=module).run(
         cycles=1,
         progress=messages.append,
     )
-    cycle = report.cycles[0]
-    assert "_v2_fixed_reference_measured" not in cycle
-    assert cycle["live_v2"]["fixed_reference"]["subject_generation"] == 27
+    fixed = report.cycles[0]["live_v2"]["fixed_reference"]
+    assert fixed["subject_generation"] == 21
+    assert fixed["result"]["score"] == 0.625
 
-    ui_rows = [
-        json.loads(line[len("DOGMATIST_UI "):])
-        for line in messages
-        if line.startswith("DOGMATIST_UI ")
-    ]
-    completed = next(row for row in ui_rows if row.get("phase") == "cycle_complete")
-    assert completed["fixed_reference"]["result"]["score"] == 0.625
+    ui_rows = []
+    for line in messages:
+        if not line.startswith("DOGMATIST_UI "):
+            continue
+        ui_rows.append(json.loads(line[len("DOGMATIST_UI "):]))
+    cycle_complete = next(row for row in ui_rows if row.get("phase") == "cycle_complete")
+    assert cycle_complete["fixed_reference"]["result"]["games"] == 4
