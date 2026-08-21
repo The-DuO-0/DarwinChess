@@ -64,6 +64,14 @@ from .live_parallel_population import LiveParallelLeagueOverride, build_parallel
 from .live_replay import LiveReplayMixSampler, LiveReplayOverride, ReplayBatchQuota
 from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveReplayExample, LiveStrengthCoordinator, LiveStrengthRoundReport
+from .mac_preflight import (
+    MacPreflightReport,
+    PreflightCheck,
+    audit_copied_state_after_run,
+    load_snapshot_manifest,
+    run_spawn_probe,
+    validate_copied_state,
+)
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
     CurriculumMix,
@@ -127,6 +135,7 @@ from .ui_flow import (
     build_evolution_flow_snapshot,
     encode_ui_event,
 )
+from .validation_telemetry import ValidationTelemetry
 from .worker_supervisor import KillableWorker, LeagueWorkerSupervisor, WorkerTermination
 
 __all__ = [
@@ -190,6 +199,12 @@ __all__ = [
     "LiveReplayExample",
     "LiveStrengthCoordinator",
     "LiveStrengthRoundReport",
+    "MacPreflightReport",
+    "PreflightCheck",
+    "audit_copied_state_after_run",
+    "load_snapshot_manifest",
+    "run_spawn_probe",
+    "validate_copied_state",
     "GuardDecision",
     "OpenTreeStrengthGuard",
     "TrialEvidence",
@@ -249,6 +264,7 @@ __all__ = [
     "EvolutionStage",
     "build_evolution_flow_snapshot",
     "encode_ui_event",
+    "ValidationTelemetry",
     "KillableWorker",
     "LeagueWorkerSupervisor",
     "WorkerTermination",
