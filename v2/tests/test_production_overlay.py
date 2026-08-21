@@ -22,13 +22,21 @@ def _load_installer():
     return module
 
 
-def test_studio_drop_in_sources_are_syntax_valid_without_importing_qt():
+def test_drop_in_sources_are_syntax_valid_without_importing_runtime_dependencies():
     for path in (
+        OVERLAY / "darwinchess" / "parallel_selfplay.py",
         OVERLAY / "studio" / "backend.py",
         OVERLAY / "studio" / "pages" / "evolution.py",
     ):
         source = path.read_text(encoding="utf-8")
         compile(source, str(path), "exec")
+
+
+def test_selfplay_drop_in_leaves_first_ctrl_c_to_parent():
+    source = (OVERLAY / "darwinchess" / "parallel_selfplay.py").read_text(encoding="utf-8")
+    assert "signal.signal(signal.SIGINT, signal.SIG_IGN)" in source
+    assert "ProcessPoolExecutor" in source
+    assert "initializer=_worker_init" in source
 
 
 def test_installer_patches_exact_uploaded_pyproject_and_cli_shape():
