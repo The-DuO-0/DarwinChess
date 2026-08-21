@@ -18,13 +18,13 @@ The same rule applies to a first Ctrl-C safe-stop request. A second Ctrl-C remai
 
 ## 2. The watchdog is a separate bug detector
 
-A worker is force-stopped only by an independent, deliberately generous watchdog. Current production defaults:
+A worker is force-stopped only by an independent, deliberately extreme bug watchdog. Current safety floor:
 
-- no completed move/search progress for **30 minutes** -> `no_move_progress_timeout`;
-- one game reaches **2 hours** -> emergency abnormal-game ceiling;
+- no completed move/search progress for **at least 60 minutes** -> `no_move_progress_timeout`;
+- one game reaches **at least 24 hours** -> final abnormal-process / process-leak ceiling;
 - terminate, wait **2 seconds**, then kill only if the worker still exists.
 
-These numbers are **not** derived from remaining Night time. A run with 3 seconds remaining still allows a healthy game to finish. A run with 8 hours remaining can still kill a worker that has clearly wedged for 30 minutes.
+Older config values cannot lower the 60-minute / 24-hour floor. They may only be raised. These numbers are **not** derived from remaining Night time. A run with 3 seconds remaining still allows a healthy game to finish. A game can keep progressing for hours after the run budget and will not be killed merely for crossing that budget.
 
 The policy is installed temporarily in the live overlay and the user's original config values are restored when the run exits.
 
@@ -67,7 +67,8 @@ A long Gen15 reign is therefore no longer automatically interpreted as either su
 Pure-Python tests cover:
 
 - compute-budget expiry does not time out active games;
-- generous watchdog thresholds install and restore cleanly;
+- the bug-only watchdog floor installs and restores cleanly;
+- stale aggressive watchdog config is clamped upward;
 - frozen checkpoint immutability/checksum verification;
 - complete colour-pair scoring only;
 - live Gen15 vs frozen Gen15 uses distinct worker identities.
