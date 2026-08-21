@@ -271,22 +271,18 @@ class LiveEvolutionRunner:
                         raw = run_cycle()
 
                 result = dict(raw) if isinstance(raw, dict) else {"result": raw}
-                # The private marker prevents double reference evaluation when the
-                # public cycle delegates to a wrapped unlocked cycle. It should not
-                # leak into logs/API results.
-                result.pop("_v2_fixed_reference_measured", None)
-                fixed_reference = result.get("fixed_reference")
                 strength_report = getattr(strength_hook, "last_report", None)
                 strength_error = getattr(strength_hook, "last_error", None)
                 parallel_ui = getattr(parallel_hook, "latest_ui", None)
+                fixed_reference = result.get("fixed_reference") if isinstance(result, dict) else None
                 result["live_v2"] = {
                     "compute": self._run_clock.snapshot(),
                     "league_drain": league_guard.state.ui_payload(),
                     "arena_drain": arena_guard.state.ui_payload(),
                     "parallel_league": parallel_ui,
                     "strength_lab": strength_report.ui_payload() if strength_report is not None else None,
-                    "fixed_reference": fixed_reference,
                     "strength_error": str(strength_error) if strength_error is not None else None,
+                    "fixed_reference": fixed_reference,
                 }
                 completed.append(result)
                 progress(json.dumps(result, ensure_ascii=False, indent=2, default=str))
