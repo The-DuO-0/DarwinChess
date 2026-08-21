@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 
+MIN_STALL_SECONDS = 60.0 * 60.0
+MIN_EMERGENCY_GAME_SECONDS = 24.0 * 60.0 * 60.0
+
+
 @dataclass(frozen=True)
 class LiveGameWatchdogPolicy:
     """Conservative production watchdog for real chess games.
@@ -14,27 +18,44 @@ class LiveGameWatchdogPolicy:
     colour pairs finish naturally.
 
     A worker may be terminated only by this separate bug-watchdog policy. The
-    copied-state defaults intentionally err heavily toward *not* killing chess:
+    safety floor intentionally errs heavily toward *not* killing chess:
 
-    - 60 minutes with no completed move/search progress -> likely wedged search;
-    - 24 hours total for one game -> last-resort abnormal-process ceiling.
+    - at least 60 minutes with no completed move/search progress;
+    - at least 24 hours total for one game as a last-resort process-leak ceiling.
 
-    A game that keeps making progress may therefore continue for many hours past
-    the nominal Night budget. The 24-hour ceiling is not derived from run time and
-    exists only as a final process-leak guard; real-Mac evidence can raise it again.
+    Inputs lower than those floors are automatically raised. This is deliberate:
+    a stale old config must not quietly reintroduce a short game timeout. Values
+    may still be configured *higher* after real-Mac measurements.
     """
 
-    stall_seconds: float = 60.0 * 60.0
-    emergency_game_seconds: float = 24.0 * 60.0 * 60.0
+    stall_seconds: float = MIN_STALL_SECONDS
+    emergency_game_seconds: float = MIN_EMERGENCY_GAME_SECONDS
     kill_grace_seconds: float = 2.0
 
     def __post_init__(self) -> None:
-        if self.stall_seconds <= 0:
-            raise ValueError("stall_seconds must be positive")
-        if self.emergency_game_seconds <= self.stall_seconds:
-            raise ValueError("emergency_game_seconds must exceed stall_seconds")
+        if self.stall_seconds <= 0 or self.emergency_game_seconds <= 0:
+            raise ValueError("watchdog durations must be positive")
         if self.kill_grace_seconds < 0:
             raise ValueError("kill_grace_seconds must be non-negative")
+
+        # Frozen dataclass, but normalization belongs at policy construction so
+        # every caller—including older configs—gets the same bug-only floor.
+        object.__setattr__(
+            self,
+            "stall_seconds",
+            max(float(self.stall_seconds), MIN_STALL_SECONDS),
+        )
+        object.__setattr__(
+            self,
+            "emergency_game_seconds",
+            max(float(self.emergency_game_seconds), MIN_EMERGENCY_GAME_SECONDS),
+        )
+        if self.emergency_game_seconds <= self.stall_seconds:
+            object.__setattr__(
+                self,
+                "emergency_game_seconds",
+                max(MIN_EMERGENCY_GAME_SECONDS, self.stall_seconds * 2.0),
+            )
 
     def ui_payload(self) -> dict[str, float | bool | str]:
         return {
