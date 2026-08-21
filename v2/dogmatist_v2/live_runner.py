@@ -25,8 +25,6 @@ class LiveEvolutionRunReport:
 
 
 class _RunClockView:
-    """Clock facade that turns a user safe-stop request into drain admission stop."""
-
     def __init__(self, owner: "LiveEvolutionRunner") -> None:
         self.owner = owner
 
@@ -63,15 +61,9 @@ class _RunClockView:
 class LiveEvolutionRunner:
     """Production overlay for active-compute, Strength Lab and safe evaluation.
 
-    The real DarwinRuntime exposes private unlocked cycle methods because its old
-    ``evolve()`` holds one writer lock around the whole overnight run. When those
-    methods are available, this runner deliberately preserves that same invariant:
-    one Evolution writer lock for the entire run, not a gap between cycles.
-
-    A first SIGINT is converted into a *safe-stop request* rather than an immediate
-    KeyboardInterrupt. Existing League/Arena colour pairs drain, no new pair is
-    admitted, and incomplete evidence cannot replace the champion. A second SIGINT
-    raises KeyboardInterrupt as an emergency escape hatch.
+    When the real unlocked cycle methods exist, one EvolutionLock is held across
+    the whole run exactly like production ``DarwinRuntime.evolve``. A first SIGINT
+    becomes a safe-drain request; a second SIGINT is the emergency hard interrupt.
     """
 
     def __init__(
@@ -108,16 +100,10 @@ class LiveEvolutionRunner:
         self._run_clock = _RunClockView(self)
 
     @classmethod
-    def from_hours(
-        cls,
-        runtime: Any,
-        hours: float,
-        **kwargs: Any,
-    ) -> "LiveEvolutionRunner":
+    def from_hours(cls, runtime: Any, hours: float, **kwargs: Any) -> "LiveEvolutionRunner":
         if hours < 0:
             raise ValueError("hours must be non-negative")
-        clock = HeartbeatComputeClock(float(hours) * 3600.0)
-        return cls(runtime, clock, **kwargs)
+        return cls(runtime, HeartbeatComputeClock(float(hours) * 3600.0), **kwargs)
 
     def request_stop(self, reason: str = "user_stop") -> None:
         if not self._stop_requested:
@@ -126,13 +112,9 @@ class LiveEvolutionRunner:
 
     @contextmanager
     def _signal_context(self, progress: Callable[[str], None]) -> Iterator[None]:
-        if (
-            not self.handle_sigint
-            or threading.current_thread() is not threading.main_thread()
-        ):
+        if not self.handle_sigint or threading.current_thread() is not threading.main_thread():
             yield
             return
-
         previous = signal.getsignal(signal.SIGINT)
 
         def handler(_signum: int, _frame: Any) -> None:
@@ -140,11 +122,9 @@ class LiveEvolutionRunner:
             if self._sigint_count >= 2:
                 raise KeyboardInterrupt
             self.request_stop("user_stop")
-            message = (
-                "[dog_matist][stage=safe-stop][detail=SIGINT received; "
-                "finish current colour pair(s), then stop]"
+            progress(
+                "[dog_matist][stage=safe-stop][detail=SIGINT received; finish current colour pair(s), then stop]"
             )
-            progress(message)
             progress(
                 "DOGMATIST_UI " + json.dumps({
                     "phase": "safe_stop_requested",
@@ -161,12 +141,6 @@ class LiveEvolutionRunner:
 
     @contextmanager
     def _writer_cycle_context(self) -> Iterator[Callable[[], Any]]:
-        """Preserve the live runtime's whole-run single-writer semantics.
-
-        Pure-Python tests/fake runtimes do not ship the live lock module or
-        unlocked cycle methods; those transparently fall back to ``evolve_cycle``.
-        """
-
         has_unlocked = all(
             hasattr(self.runtime, name)
             for name in ("_population_evolve_cycle_unlocked", "_evolve_cycle_unlocked")
@@ -175,10 +149,8 @@ class LiveEvolutionRunner:
         if not has_unlocked or root is None:
             yield self.runtime.evolve_cycle
             return
-
         try:
-            locks_module = importlib.import_module("darwinchess.locks")
-            EvolutionLock = locks_module.EvolutionLock
+            EvolutionLock = importlib.import_module("darwinchess.locks").EvolutionLock
         except Exception:
             yield self.runtime.evolve_cycle
             return
@@ -196,6 +168,47 @@ class LiveEvolutionRunner:
                 return self.runtime._evolve_cycle_unlocked()
 
             yield unlocked_cycle
+
+    def _strength_context(self, progress: Callable[[str], None]) -> Any:
+        if self.strength_coordinator is None:
+            return nullcontext()
+
+        def on_report(report: Any) -> None:
+            payload = report.ui_payload()
+            progress(
+                "DOGMATIST_UI " + json.dumps({
+                    "phase": "strength_lab",
+                    "compute": self._run_clock.snapshot(),
+                    **payload,
+                }, ensure_ascii=False, default=str)
+            )
+            mode = getattr(getattr(report, "plan", None), "mode", None)
+            mode_text = getattr(mode, "value", mode) or "active"
+            progress(
+                f"[dog_matist][stage=strength-lab][detail={mode_text} "
+                f"captured={getattr(report, 'captured_positions', 0)} "
+                f"teacher={getattr(report, 'teacher_examples', 0)}]"
+            )
+
+        def on_error(exc: Exception) -> None:
+            progress(
+                "DOGMATIST_UI " + json.dumps({
+                    "phase": "strength_lab_error",
+                    "error": str(exc),
+                    "compute": self._run_clock.snapshot(),
+                    "fallback": "original_training" if self.strength_fail_open else "raise",
+                }, ensure_ascii=False)
+            )
+
+        return LiveStrengthCycleOverride(
+            self.strength_coordinator,
+            targeted_examples=self.targeted_examples,
+            teacher_request_cap=self.teacher_request_cap,
+            persist_teacher=self.persist_teacher,
+            report_callback=on_report,
+            error_callback=on_error,
+            fail_open=self.strength_fail_open,
+        )
 
     def run(
         self,
@@ -231,18 +244,7 @@ class LiveEvolutionRunner:
                     }, ensure_ascii=False)
                 )
 
-                if self.strength_coordinator is None:
-                    strength_context: Any = nullcontext()
-                else:
-                    strength_context = LiveStrengthCycleOverride(
-                        self.strength_coordinator,
-                        targeted_examples=self.targeted_examples,
-                        teacher_request_cap=self.teacher_request_cap,
-                        persist_teacher=self.persist_teacher,
-                        fail_open=self.strength_fail_open,
-                    )
-
-                with strength_context as strength_hook, LiveLeagueDrainOverride(
+                with self._strength_context(progress) as strength_hook, LiveLeagueDrainOverride(
                     self.runtime,
                     self._run_clock,
                     runtime_module=self.runtime_module,
