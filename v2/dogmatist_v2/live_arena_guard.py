@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import importlib
 from typing import Any
 
@@ -12,11 +12,14 @@ class LiveArenaDrainState:
     pairs_started: int = 0
     pairs_completed: int = 0
     games_completed: int = 0
+    linked_state: Any | None = field(default=None, repr=False, compare=False)
 
     def request_drain(self, reason: str = "compute_budget_exhausted") -> None:
         if not self.draining:
             self.draining = True
             self.reason = reason
+        if self.linked_state is not None and hasattr(self.linked_state, "request_drain"):
+            self.linked_state.request_drain(reason)
 
     def ui_payload(self) -> dict[str, object]:
         return {
