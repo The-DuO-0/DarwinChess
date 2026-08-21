@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
 
 from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
+from dogmatist_v2.validation_telemetry import ValidationTelemetry
 
 
 def build_plan(
@@ -42,7 +44,7 @@ def build_plan(
     manifest = load_snapshot_manifest(snapshot)
     validation_home = snapshot.parent
     live_source = Path(manifest.source_root).expanduser().resolve()
-    if validation_home == live_source.parent and snapshot == live_source:
+    if snapshot == live_source:
         raise RuntimeError("refusing to run against the live state root")
 
     command = [str(executable), "--mode", mode, "evolve"]
@@ -65,11 +67,61 @@ def build_plan(
             "DOGMATIST_V2_COPY_VALIDATION": "1",
         },
         "safety": {
-            "teacher_persistence_expected": False,
+            "teacher_persistence_forced_off": True,
+            "initial_league_parallel_games_forced": 2,
             "live_state_must_not_be_referenced": True,
             "run_budget_interrupts_healthy_games": False,
         },
     }
+
+
+def _run_with_telemetry(plan: dict[str, object]) -> tuple[int, Path, Path, ValidationTelemetry]:
+    validation_home = Path(str(plan["validation_home"]))
+    report_dir = validation_home / "dogmatist_v2_validation_reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = report_dir / f"validation_{stamp}.log"
+    summary_path = report_dir / f"validation_{stamp}.json"
+
+    env = os.environ.copy()
+    env.update({str(k): str(v) for k, v in plan["environment"].items()})
+    source = Path(str(plan["source_copy"]))
+    command = [str(x) for x in plan["command"]]
+    telemetry = ValidationTelemetry()
+
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=source,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="")
+            log.write(line)
+            log.flush()
+            telemetry.feed_line(line.rstrip("\n"))
+        return_code = int(process.wait())
+
+    postflight = validate_copied_state(plan["snapshot_state"], include_spawn_probe=False)
+    summary = {
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "return_code": return_code,
+        "plan": plan,
+        "telemetry": telemetry.as_dict(),
+        "postflight": postflight.as_dict(),
+        "pass": return_code == 0 and postflight.ok and not telemetry.timed_out_games,
+        "note": (
+            "A watchdog timeout is treated as a validation failure to investigate; "
+            "reaching the run budget while games continue normally is not a failure."
+        ),
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return return_code, log_path, summary_path, telemetry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,12 +163,13 @@ def main(argv: list[str] | None = None) -> int:
         print("\nDRY RUN ONLY. Add --run only after reviewing the isolated HOME and checkpoint paths above.")
         return 0
 
-    env = os.environ.copy()
-    env.update({str(k): str(v) for k, v in plan["environment"].items()})
-    source = Path(str(plan["source_copy"]))
-    command = [str(x) for x in plan["command"]]
-    completed = subprocess.run(command, cwd=source, env=env, check=False)
-    return int(completed.returncode)
+    return_code, log_path, summary_path, telemetry = _run_with_telemetry(plan)
+    print("\nCopied-state validation artifacts:")
+    print(f"  log:     {log_path}")
+    print(f"  summary: {summary_path}")
+    if telemetry.timed_out_games:
+        print(f"  WATCHDOG TRIPS: {sorted(telemetry.timed_out_games)}")
+    return return_code
 
 
 if __name__ == "__main__":
