@@ -75,3 +75,26 @@ def test_explicit_pause_is_excluded_independently_of_sleep_detection():
     assert snap["paused_seconds"] == 100.0
     assert snap["excluded_sleep_seconds"] == 0.0
     assert snap["remaining_seconds"] == 10.0
+
+
+def test_forced_expiry_closes_admission_budget_without_rewriting_elapsed_time():
+    now = FakeTime()
+    clock = HeartbeatComputeClock(
+        100.0,
+        now=now,
+        heartbeat_interval_seconds=1.0,
+        suspension_threshold_seconds=10.0,
+    )
+    now.advance(7)
+    clock.pulse()
+    before = clock.snapshot()
+    assert before["elapsed_seconds"] == 7.0
+    assert before["remaining_seconds"] == 93.0
+    assert before["expired"] is False
+
+    clock.request_expiry()
+    after = clock.snapshot()
+    assert after["elapsed_seconds"] == 7.0
+    assert after["remaining_seconds"] == 0.0
+    assert after["expired"] is True
+    assert clock.expired
