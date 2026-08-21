@@ -4,7 +4,6 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
-import sys
 
 
 CLI_IMPORT = "from dogmatist_v2.live_entrypoint import LiveEvolutionOptions, run_live_evolution\n"
@@ -19,29 +18,46 @@ class OverlayPlan:
     target_package: Path
     pyproject: Path
     cli: Path
+    source_studio_backend: Path
+    source_evolution_page: Path
+    target_studio_backend: Path
+    target_evolution_page: Path
 
 
 def repo_v2_root() -> Path:
-    # .../v2/integration/production_overlay/install_on_copy.py -> .../v2
     return Path(__file__).resolve().parents[2]
 
 
 def make_plan(target_root: str | Path) -> OverlayPlan:
     target = Path(target_root).expanduser().resolve()
-    source = repo_v2_root() / "dogmatist_v2"
+    v2_root = repo_v2_root()
+    overlay_root = v2_root / "integration" / "production_overlay"
+    source = v2_root / "dogmatist_v2"
     pyproject = target / "pyproject.toml"
     cli = target / "darwinchess" / "cli.py"
-    if not source.is_dir():
-        raise FileNotFoundError(f"V2 package source missing: {source}")
-    if not pyproject.is_file() or not cli.is_file():
-        raise FileNotFoundError(
-            "target does not look like the uploaded dog_matist-2.0 source "
-            "(need pyproject.toml and darwinchess/cli.py)"
-        )
+    target_backend = target / "studio" / "backend.py"
+    target_evolution = target / "studio" / "pages" / "evolution.py"
+    source_backend = overlay_root / "studio" / "backend.py"
+    source_evolution = overlay_root / "studio" / "pages" / "evolution.py"
+
+    required = [source, pyproject, cli, target_backend, target_evolution, source_backend, source_evolution]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise FileNotFoundError("overlay/target files missing: " + ", ".join(missing))
     project_text = pyproject.read_text(encoding="utf-8")
     if 'name = "dog-matist"' not in project_text:
         raise RuntimeError("refusing to patch an unrelated pyproject")
-    return OverlayPlan(target, source, target / "dogmatist_v2", pyproject, cli)
+    return OverlayPlan(
+        target,
+        source,
+        target / "dogmatist_v2",
+        pyproject,
+        cli,
+        source_backend,
+        source_evolution,
+        target_backend,
+        target_evolution,
+    )
 
 
 def patch_pyproject(text: str) -> str:
@@ -78,8 +94,14 @@ def apply_overlay(plan: OverlayPlan) -> None:
     pyproject_text = patch_pyproject(plan.pyproject.read_text(encoding="utf-8"))
     cli_text = patch_cli(plan.cli.read_text(encoding="utf-8"))
 
-    _backup(plan.pyproject)
-    _backup(plan.cli)
+    for path in (
+        plan.pyproject,
+        plan.cli,
+        plan.target_studio_backend,
+        plan.target_evolution_page,
+    ):
+        _backup(path)
+
     if plan.target_package.exists():
         backup_package = plan.target_root / "dogmatist_v2.pre_v2"
         if backup_package.exists():
@@ -92,6 +114,8 @@ def apply_overlay(plan: OverlayPlan) -> None:
     )
     plan.pyproject.write_text(pyproject_text, encoding="utf-8")
     plan.cli.write_text(cli_text, encoding="utf-8")
+    shutil.copy2(plan.source_studio_backend, plan.target_studio_backend)
+    shutil.copy2(plan.source_evolution_page, plan.target_evolution_page)
 
 
 def describe(plan: OverlayPlan) -> str:
@@ -101,26 +125,29 @@ def describe(plan: OverlayPlan) -> str:
         f"  copy package: {plan.source_package} -> {plan.target_package}",
         f"  patch:        {plan.pyproject}",
         f"  patch:        {plan.cli}",
+        f"  replace UI:   {plan.target_studio_backend}",
+        f"  replace UI:   {plan.target_evolution_page}",
         "  state data:   NOT touched by this installer",
         "  teacher:      defaults OFF until copied-state validation passes",
+        "  backups:      *.pre_v2 are created before source replacement",
     ])
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Overlay the V2 runtime onto a COPY of dog_matist-2.0 source."
+        description="Overlay V2 onto a COPY of the uploaded dog_matist-2.0 source."
     )
     parser.add_argument("target", help="path to copied dog_matist-2.0 source")
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="actually write the source overlay; without this flag only print the plan",
+        help="write the source overlay; without this flag only print the plan",
     )
     args = parser.parse_args(argv)
     plan = make_plan(args.target)
     print(describe(plan))
     if not args.apply:
-        print("\nDRY RUN ONLY. Re-run with --apply after confirming this is a disposable/copy source tree.")
+        print("\nDRY RUN ONLY. Re-run with --apply only on a disposable/copy source tree.")
         return 0
     apply_overlay(plan)
     print("\nOverlay applied to the SOURCE COPY. Reinstall that copy in its venv before testing.")
