@@ -62,6 +62,14 @@ def _integrity(path: Path) -> tuple[bool, str]:
         conn.close()
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def load_snapshot_manifest(snapshot_root: str | Path) -> StateSnapshotManifest:
     root = Path(snapshot_root).expanduser().resolve()
     path = root / "SNAPSHOT_MANIFEST.json"
@@ -256,5 +264,101 @@ def validate_copied_state(
 
     if include_spawn_probe:
         checks.append(run_spawn_probe())
+
+    return MacPreflightReport(str(root), tuple(checks))
+
+
+def audit_copied_state_after_run(
+    snapshot_root: str | Path,
+    *,
+    expect_teacher_persistence: bool = False,
+    require_frozen_reference: bool = True,
+    db_name: str = "darwinchess.sqlite3",
+    strength_db_name: str = "strength_v2.sqlite3",
+    frozen_reference_dir_name: str = "frozen_strength_reference",
+) -> MacPreflightReport:
+    """Read-only postflight audit after the first copied-state Evolution run.
+
+    The audit deliberately asks different questions from preflight: did the V2 run
+    keep every checkpoint inside the copy, obey the teacher-write gate, create a
+    valid immutable reference, and leave both SQLite files structurally healthy?
+    """
+
+    root = Path(snapshot_root).expanduser().resolve()
+    base = validate_copied_state(
+        root,
+        db_name=db_name,
+        strength_db_name=strength_db_name,
+        frozen_reference_dir_name=frozen_reference_dir_name,
+        include_spawn_probe=False,
+    )
+    checks = list(base.checks)
+
+    main_db = root / db_name
+    teacher_count = 0
+    teacher_detail = "games table unavailable"
+    if main_db.is_file():
+        conn = sqlite3.connect(f"file:{main_db.resolve()}?mode=ro", uri=True)
+        try:
+            if _table_exists(conn, "games"):
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM games WHERE source='strength_teacher'"
+                ).fetchone()
+                teacher_count = int(row[0] if row else 0)
+                teacher_detail = f"strength_teacher rows={teacher_count}"
+            else:
+                teacher_detail = "games table absent in this fixture"
+        finally:
+            conn.close()
+    teacher_ok = expect_teacher_persistence or teacher_count == 0
+    checks.append(PreflightCheck("teacher_write_gate", teacher_ok, teacher_detail))
+
+    reference_root = root / frozen_reference_dir_name
+    reference_manifest = reference_root / "reference.json"
+    if reference_manifest.is_file():
+        manager = FrozenReferenceManager(reference_root)
+        reference = manager.load()
+        if reference is None:
+            checks.append(PreflightCheck("postrun_frozen_reference", False, "manifest could not be loaded"))
+        else:
+            ref_path = Path(reference.checkpoint_path).expanduser().resolve()
+            checksum_ok = manager.verify(reference)
+            ok = checksum_ok and _inside(ref_path, root)
+            checks.append(
+                PreflightCheck(
+                    "postrun_frozen_reference",
+                    ok,
+                    f"Gen{reference.generation}; inside_copy={_inside(ref_path, root)} checksum={'ok' if checksum_ok else 'BAD'}",
+                )
+            )
+    else:
+        checks.append(
+            PreflightCheck(
+                "postrun_frozen_reference",
+                not require_frozen_reference,
+                "reference.json missing after run",
+            )
+        )
+
+    strength_db = root / strength_db_name
+    if strength_db.is_file():
+        conn = sqlite3.connect(f"file:{strength_db.resolve()}?mode=ro", uri=True)
+        try:
+            if _table_exists(conn, "strength_rounds"):
+                row = conn.execute("SELECT COUNT(*) FROM strength_rounds").fetchone()
+                rounds = int(row[0] if row else 0)
+                checks.append(
+                    PreflightCheck(
+                        "strength_round_history",
+                        rounds > 0 if require_frozen_reference else True,
+                        f"strength_rounds={rounds}",
+                    )
+                )
+            else:
+                checks.append(PreflightCheck("strength_round_history", False, "strength_rounds table missing"))
+        finally:
+            conn.close()
+    else:
+        checks.append(PreflightCheck("strength_round_history", False, "strength_v2.sqlite3 missing"))
 
     return MacPreflightReport(str(root), tuple(checks))
