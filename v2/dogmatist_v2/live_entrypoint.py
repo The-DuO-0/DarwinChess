@@ -7,6 +7,7 @@ from typing import Any, Callable
 from .live_compute import HeartbeatComputeClock
 from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveStrengthCoordinator
+from .live_signal_safety import install_parallel_league_signal_safety
 from .strength_store import StrengthStore
 
 
@@ -33,13 +34,7 @@ class LiveEvolutionOptions:
 
 
 def _cycle_only_clock(cycles: int) -> HeartbeatComputeClock:
-    """Non-binding safety clock for explicit cycle-count runs.
-
-    `run_normal.command` uses one explicit cycle and does not ask for a time limit.
-    We still want heartbeat/safe-stop telemetry, so use a deliberately enormous
-    budget (one year per requested cycle, minimum one year). The cycle counter is
-    the actual stop condition.
-    """
+    """Non-binding safety clock for explicit cycle-count runs."""
 
     years = max(1, int(cycles))
     return HeartbeatComputeClock(float(years) * 366.0 * 24.0 * 3600.0)
@@ -56,13 +51,15 @@ def run_live_evolution(
 ) -> LiveEvolutionRunReport:
     """Run the real DarwinRuntime through the tested V2 production overlay.
 
-    The Strength Lab uses its own small SQLite database under the runtime state
-    root. It does **not** migrate or alter the existing production schema. The
-    current production replay/checkpoint database remains owned by MemoryStore.
+    Strength Lab persists into a separate small SQLite database under the runtime
+    state root. The live replay/checkpoint database remains owned by MemoryStore.
+    Teacher labels deliberately default OFF until copied-state Mac validation.
 
-    `persist_teacher` deliberately defaults to False until copied-state Mac
-    validation has passed. Hard-position capture and recipe planning can therefore
-    be exercised first without inserting new teacher replay rows.
+    Child League workers install SIGINT-ignore behavior before the run. This is
+    important on macOS terminals: Ctrl-C targets the whole foreground process
+    group, but only the parent should interpret the first signal as a safe-drain
+    request. The parent still owns watchdog terminate/kill and the second-SIGINT
+    emergency path.
     """
 
     if hours is not None and cycles is not None:
@@ -79,6 +76,9 @@ def run_live_evolution(
     if not isinstance(paths, dict) or "root" not in paths:
         raise ValueError("runtime must expose paths['root'] for Strength Lab state")
     strength_path = Path(paths["root"]) / opts.strength_db_name
+
+    if opts.enable_parallel_league:
+        install_parallel_league_signal_safety()
 
     if hours is not None:
         clock = HeartbeatComputeClock(float(hours) * 3600.0)
