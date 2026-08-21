@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from dogmatist_v2.live_compute import HeartbeatComputeClock
@@ -83,3 +84,43 @@ def test_runner_honors_explicit_cycle_limit_before_compute_budget():
     assert report.cycles_completed == 1
     assert report.stop_reason == "cycles_complete"
     assert report.compute["remaining_seconds"] == 95.0
+
+
+def test_runner_surfaces_fixed_reference_and_hides_private_marker():
+    now = FakeTime()
+
+    class FixedRuntime(FakeRuntime):
+        def evolve_cycle(self):
+            self.cycles += 1
+            self.now.advance(5.0)
+            return {
+                "cycle": self.cycles,
+                "champion_before": 15,
+                "champion_after": 15,
+                "_v2_fixed_reference_measured": True,
+                "fixed_reference": {
+                    "reference": {"reference_id": "g15-frozen", "generation": 15},
+                    "subject_generation": 27,
+                    "result": {"score": 0.625, "games": 4},
+                    "skipped_reason": None,
+                },
+            }
+
+    runtime = FixedRuntime(now)
+    module = SimpleNamespace(PopulationArena=DummyPopulationArena)
+    messages = []
+    report = LiveEvolutionRunner(runtime, _clock(now, 100.0), runtime_module=module).run(
+        cycles=1,
+        progress=messages.append,
+    )
+    cycle = report.cycles[0]
+    assert "_v2_fixed_reference_measured" not in cycle
+    assert cycle["live_v2"]["fixed_reference"]["subject_generation"] == 27
+
+    ui_rows = [
+        json.loads(line[len("DOGMATIST_UI "):])
+        for line in messages
+        if line.startswith("DOGMATIST_UI ")
+    ]
+    completed = next(row for row in ui_rows if row.get("phase") == "cycle_complete")
+    assert completed["fixed_reference"]["result"]["score"] == 0.625
