@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .live_compute import HeartbeatComputeClock
+from .live_fixed_reference import LiveFixedReferenceCoordinator, LiveFixedReferenceCycleOverride
+from .live_fixed_reference_safe import fixed_reference_fail_open
 from .live_game_watchdog import LiveGameWatchdogPolicy, install_live_game_watchdog_policy
 from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveStrengthCoordinator
@@ -27,6 +30,10 @@ class LiveEvolutionOptions:
     watchdog_stall_seconds: float = 30.0 * 60.0
     watchdog_emergency_game_seconds: float = 2.0 * 60.0 * 60.0
     watchdog_kill_grace_seconds: float = 2.0
+    enable_fixed_reference: bool = True
+    fixed_reference_pairs: int = 2
+    fixed_reference_fail_open: bool = True
+    fixed_reference_dir_name: str = "frozen_strength_reference"
 
     def __post_init__(self) -> None:
         if self.targeted_examples <= 0:
@@ -35,7 +42,10 @@ class LiveEvolutionOptions:
             raise ValueError("teacher_request_cap must be non-negative")
         if not self.strength_db_name.strip():
             raise ValueError("strength_db_name must be non-empty")
-        # Validate the same policy that production will install.
+        if self.fixed_reference_pairs <= 0:
+            raise ValueError("fixed_reference_pairs must be positive")
+        if not self.fixed_reference_dir_name.strip():
+            raise ValueError("fixed_reference_dir_name must be non-empty")
         LiveGameWatchdogPolicy(
             stall_seconds=self.watchdog_stall_seconds,
             emergency_game_seconds=self.watchdog_emergency_game_seconds,
@@ -78,11 +88,11 @@ def run_live_evolution(
     then no new pair is admitted. A child process is force-stopped only by the
     separate, deliberately generous bug watchdog installed below.
 
-    Child League workers install SIGINT-ignore behavior before the run. This is
-    important on macOS terminals: Ctrl-C targets the whole foreground process
-    group, but only the parent should interpret the first signal as a safe-drain
-    request. The parent still owns watchdog terminate/kill and the second-SIGINT
-    emergency path.
+    A frozen reference checkpoint is copied before the first cycle and never moves
+    with the throne. Each completed round can therefore measure its best League
+    subject against the same ruler even while a dominant Champion remains in power.
+    This meter is fail-open during copied-state validation: a reference-integration
+    error must not waste the ordinary overnight evolution run.
     """
 
     if hours is not None and cycles is not None:
@@ -98,7 +108,8 @@ def run_live_evolution(
     paths = getattr(runtime, "paths", None)
     if not isinstance(paths, dict) or "root" not in paths:
         raise ValueError("runtime must expose paths['root'] for Strength Lab state")
-    strength_path = Path(paths["root"]) / opts.strength_db_name
+    state_root = Path(paths["root"])
+    strength_path = state_root / opts.strength_db_name
 
     if opts.enable_parallel_league:
         install_parallel_league_signal_safety()
@@ -129,7 +140,46 @@ def run_live_evolution(
             league_status_callback=league_status_callback,
             handle_sigint=opts.handle_sigint,
         )
-        report = runner.run(cycles=cycles, progress=progress)
+
+        fixed_context: Any = nullcontext()
+        fixed_fail_context: Any = nullcontext()
+        if opts.enable_fixed_reference:
+            fixed = LiveFixedReferenceCoordinator(
+                runtime,
+                store,
+                clock,
+                reference_root=state_root / opts.fixed_reference_dir_name,
+                pair_count=opts.fixed_reference_pairs,
+                watchdog_policy=watchdog,
+                stop_requested=lambda: runner._stop_requested,
+                status_callback=league_status_callback,
+            )
+            try:
+                reference = fixed.ensure_reference()
+                progress(
+                    "[dog_matist][fixed-reference] "
+                    f"reference={reference.reference_id} generation={reference.generation} "
+                    f"pairs/round={opts.fixed_reference_pairs}"
+                )
+                fixed_override = LiveFixedReferenceCycleOverride(runtime, fixed)
+                history = store.round_history(limit=1)
+                if history:
+                    fixed_override._round_counter = int(history[-1].round_index)
+                fixed_context = fixed_override
+                fixed_fail_context = fixed_reference_fail_open(
+                    fixed,
+                    enabled=opts.fixed_reference_fail_open,
+                )
+            except Exception as exc:
+                if not opts.fixed_reference_fail_open:
+                    raise
+                progress(
+                    "[dog_matist][fixed-reference] disabled for this run: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        with fixed_fail_context, fixed_context:
+            report = runner.run(cycles=cycles, progress=progress)
 
     progress(
         "[dog_matist][v2-live] "
