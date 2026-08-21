@@ -164,6 +164,11 @@ class FixedReferenceEvaluator:
     an admission gate: if time expires while a reference game is active, that game
     and its reverse-colour mate finish. Only the independent bug watchdog may kill
     a worker.
+
+    The frozen reference receives a negative synthetic participant id inside the
+    worker tasks. This matters when the live subject is the same generation that
+    originally became the reference (for example Gen15 vs frozen Gen15): identical
+    generation numbers must not make both sides accidentally load the live file.
     """
 
     def __init__(
@@ -205,6 +210,13 @@ class FixedReferenceEvaluator:
         if not Path(reference.checkpoint_path).is_file():
             raise FileNotFoundError(reference.checkpoint_path)
 
+        # Production generations are positive. Keep the immutable ruler as a
+        # synthetic negative participant so Gen15-live and Gen15-frozen remain two
+        # distinct players even though they share historical ancestry.
+        reference_player = -abs(int(reference.generation)) - 1
+        if reference_player == int(subject_generation):
+            reference_player -= 1
+
         pairings: list[ColorPairing] = []
         tasks: dict[str, LiveLeagueWorkerTask] = {}
         for index, (fen, opening_name) in enumerate(openings):
@@ -212,7 +224,7 @@ class FixedReferenceEvaluator:
             pair = ColorPairing(
                 pair_id,
                 str(int(subject_generation)),
-                str(int(reference.generation)),
+                str(reference_player),
                 opening_name,
             )
             pairings.append(pair)
