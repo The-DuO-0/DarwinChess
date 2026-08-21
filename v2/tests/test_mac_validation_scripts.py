@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+from dogmatist_v2.validation_telemetry import ValidationTelemetry
+
 
 V2_ROOT = Path(__file__).resolve().parents[1]
 OVERLAY = V2_ROOT / "integration" / "production_overlay"
@@ -42,3 +44,56 @@ def test_prepare_script_rejects_nonempty_validation_home(tmp_path):
         pass
     else:
         raise AssertionError("non-empty validation home should be rejected")
+
+
+def test_validation_console_compacts_parallel_league_json():
+    runmod = _load("dogmatist_run_validation_console", "run_copied_state.py")
+    renderer = runmod.ValidationConsoleRenderer(interval_seconds=999.0)
+    line = renderer.render({
+        "phase": "league",
+        "league": {
+            "played": 0,
+            "total": 8,
+            "active_games": [
+                {
+                    "white_id": "58",
+                    "black_id": "54",
+                    "opening": "Reti",
+                    "plies": 25,
+                    "runtime_seconds": 81.2,
+                },
+                {
+                    "white_id": "54",
+                    "black_id": "58",
+                    "opening": "Reti",
+                    "plies": 67,
+                    "runtime_seconds": 81.2,
+                },
+            ],
+            "failed_games": [],
+            "timed_out_games": [],
+        },
+    })
+    assert line is not None
+    assert "2 active" in line
+    assert "G58W-G54B Reti ply25 01:21" in line
+    assert "G54W-G58B Reti ply67 01:21" in line
+    assert "DOGMATIST_UI" not in line
+
+
+def test_validation_invariants_accept_explicit_three_worker_copy_run():
+    runmod = _load("dogmatist_run_validation_invariants", "run_copied_state.py")
+    telemetry = ValidationTelemetry(
+        max_parallel_games=3,
+        copy_validation={
+            "enabled": True,
+            "teacher_persistence": False,
+            "league_parallel_games": 3,
+        },
+        watchdog={"budget_interrupts_games": False},
+    )
+    checks = runmod._validation_invariants(
+        telemetry,
+        expected_parallel_games=3,
+    )
+    assert all(checks.values())
