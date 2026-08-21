@@ -144,9 +144,9 @@ def validate_copied_state(
 ) -> MacPreflightReport:
     """Read-only preflight for the copied-state real-Mac validation gate.
 
-    This function does not run training, mutate the copied database, or touch the
-    live source state. It verifies that the snapshot is internally consistent and
-    isolated before a single Evolution cycle is allowed to start.
+    This function does not run training, mutate the copied database, create the
+    reference directory, or touch the live source state. It verifies isolation and
+    consistency before a single Evolution cycle is allowed to start.
     """
 
     root = Path(snapshot_root).expanduser().resolve()
@@ -208,9 +208,7 @@ def validate_copied_state(
         PreflightCheck(
             "copied_checkpoint_set",
             checkpoints_ok,
-            (
-                f"{len(manifest.checkpoints)} copied; missing={len(missing)} escaped={len(escaped)}"
-            ),
+            f"{len(manifest.checkpoints)} copied; missing={len(missing)} escaped={len(escaped)}",
         )
     )
 
@@ -222,9 +220,8 @@ def validate_copied_state(
         checks.append(PreflightCheck("strength_sqlite_integrity", True, "not present yet; V2 may create it inside the copy"))
 
     reference_root = root / frozen_reference_dir_name
-    manager = FrozenReferenceManager(reference_root)
-    reference = manager.load()
-    if reference is None:
+    manifest_path = reference_root / "reference.json"
+    if not reference_root.exists():
         checks.append(
             PreflightCheck(
                 "frozen_reference",
@@ -232,16 +229,30 @@ def validate_copied_state(
                 "not created yet; first copied-state V2 run may freeze the copied champion",
             )
         )
-    else:
-        ref_path = Path(reference.checkpoint_path).expanduser().resolve()
-        reference_ok = _inside(ref_path, root) and manager.verify(reference)
+    elif not manifest_path.is_file():
         checks.append(
             PreflightCheck(
                 "frozen_reference",
-                reference_ok,
-                f"Gen{reference.generation} -> {ref_path}; checksum={'ok' if manager.verify(reference) else 'BAD'}",
+                False,
+                f"reference directory exists without manifest: {reference_root}",
             )
         )
+    else:
+        manager = FrozenReferenceManager(reference_root)
+        reference = manager.load()
+        if reference is None:
+            checks.append(PreflightCheck("frozen_reference", False, "reference manifest could not be loaded"))
+        else:
+            ref_path = Path(reference.checkpoint_path).expanduser().resolve()
+            checksum_ok = manager.verify(reference)
+            reference_ok = _inside(ref_path, root) and checksum_ok
+            checks.append(
+                PreflightCheck(
+                    "frozen_reference",
+                    reference_ok,
+                    f"Gen{reference.generation} -> {ref_path}; checksum={'ok' if checksum_ok else 'BAD'}",
+                )
+            )
 
     if include_spawn_probe:
         checks.append(run_spawn_probe())
