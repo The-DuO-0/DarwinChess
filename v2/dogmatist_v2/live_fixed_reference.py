@@ -22,6 +22,7 @@ class LiveFixedReferenceReport:
     result: FixedReferenceResult | None
     subject_generation: int | None
     skipped_reason: str | None = None
+    trend: tuple[dict[str, object], ...] = ()
 
     def ui_payload(self) -> dict[str, object]:
         return {
@@ -29,6 +30,7 @@ class LiveFixedReferenceReport:
             "subject_generation": self.subject_generation,
             "result": self.result.ui_payload() if self.result is not None else None,
             "skipped_reason": self.skipped_reason,
+            "trend": list(self.trend),
         }
 
 
@@ -155,6 +157,19 @@ class LiveFixedReferenceCoordinator:
         )
         return self.reference
 
+    def _trend_payload(self, *, limit: int = 8) -> tuple[dict[str, object], ...]:
+        rows = self.store.round_history(limit=limit)
+        return tuple(
+            {
+                "round_index": int(row.round_index),
+                "champion_generation": int(row.champion_generation),
+                "score": float(row.fixed_reference_score),
+                "games": int(row.paired_games),
+                "promoted": bool(row.promoted),
+            }
+            for row in rows
+        )
+
     def _subject_generation(self, raw_result: Any) -> int:
         # The League winner is the useful signal under a long-lived Champion: it
         # can improve for several rounds before finally winning promotion.
@@ -209,11 +224,23 @@ class LiveFixedReferenceCoordinator:
     def evaluate_cycle(self, raw_result: Any, *, round_index: int) -> LiveFixedReferenceReport:
         reference = self.reference or self.ensure_reference()
         if self.stop_requested():
-            report = LiveFixedReferenceReport(reference, None, None, "safe_stop_requested")
+            report = LiveFixedReferenceReport(
+                reference,
+                None,
+                None,
+                "safe_stop_requested",
+                self._trend_payload(),
+            )
             self.last_report = report
             return report
         if bool(self.clock.expired):
-            report = LiveFixedReferenceReport(reference, None, None, "compute_budget_exhausted_before_reference")
+            report = LiveFixedReferenceReport(
+                reference,
+                None,
+                None,
+                "compute_budget_exhausted_before_reference",
+                self._trend_payload(),
+            )
             self.last_report = report
             return report
 
@@ -241,7 +268,15 @@ class LiveFixedReferenceCoordinator:
 
         def emit(snapshot: dict[str, object]) -> None:
             if self.status_callback is not None:
-                self.status_callback({"phase": "fixed_reference", "fixed_reference": snapshot})
+                self.status_callback({
+                    "phase": "fixed_reference",
+                    "fixed_reference": {
+                        "reference": reference.as_dict(),
+                        "subject_generation": subject,
+                        "active": snapshot,
+                        "trend": list(self._trend_payload()),
+                    },
+                })
 
         evaluator = FixedReferenceEvaluator(
             clock=self.reference_clock,
@@ -280,7 +315,13 @@ class LiveFixedReferenceCoordinator:
             mode=planned_mode,
             recorded_at=datetime.now(timezone.utc),
         )
-        report = LiveFixedReferenceReport(reference, result, subject, None)
+        report = LiveFixedReferenceReport(
+            reference,
+            result,
+            subject,
+            None,
+            self._trend_payload(),
+        )
         self.last_report = report
         return report
 
