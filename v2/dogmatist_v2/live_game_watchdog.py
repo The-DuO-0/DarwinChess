@@ -13,19 +13,19 @@ class LiveGameWatchdogPolicy:
     expires, DogMatist only stops admitting new work and lets already-started
     colour pairs finish naturally.
 
-    A worker may be terminated only by this separate watchdog policy. Defaults are
-    intentionally generous for the current AlphaBeta engine:
+    A worker may be terminated only by this separate bug-watchdog policy. The
+    copied-state defaults intentionally err heavily toward *not* killing chess:
 
-    - 30 minutes with no completed move/search progress -> clearly wedged search;
-    - 2 hours total for one game -> emergency ceiling for an obviously abnormal
-      game, independent of the requested 8/10-hour training budget.
+    - 60 minutes with no completed move/search progress -> likely wedged search;
+    - 24 hours total for one game -> last-resort abnormal-process ceiling.
 
-    Both thresholds are production options and can be increased later from copied-
-    state Mac evidence. They must never be derived from the remaining run budget.
+    A game that keeps making progress may therefore continue for many hours past
+    the nominal Night budget. The 24-hour ceiling is not derived from run time and
+    exists only as a final process-leak guard; real-Mac evidence can raise it again.
     """
 
-    stall_seconds: float = 30.0 * 60.0
-    emergency_game_seconds: float = 2.0 * 60.0 * 60.0
+    stall_seconds: float = 60.0 * 60.0
+    emergency_game_seconds: float = 24.0 * 60.0 * 60.0
     kill_grace_seconds: float = 2.0
 
     def __post_init__(self) -> None:
@@ -42,7 +42,7 @@ class LiveGameWatchdogPolicy:
             "stall_seconds": self.stall_seconds,
             "emergency_game_seconds": self.emergency_game_seconds,
             "kill_grace_seconds": self.kill_grace_seconds,
-            "policy": "finish_started_games; kill_only_obvious_stall_or_emergency",
+            "policy": "finish_started_games; kill_only_obvious_stall_or_extreme_process_leak",
         }
 
 
