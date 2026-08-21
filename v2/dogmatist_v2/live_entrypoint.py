@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .live_compute import HeartbeatComputeClock
 from .live_fixed_reference import LiveFixedReferenceCoordinator, LiveFixedReferenceCycleOverride
@@ -68,6 +69,31 @@ def _cycle_only_clock(cycles: int) -> HeartbeatComputeClock:
     return HeartbeatComputeClock(float(years) * 366.0 * 24.0 * 3600.0)
 
 
+@contextmanager
+def _copy_validation_runtime_overrides(runtime: Any, enabled: bool) -> Iterator[None]:
+    """Force conservative settings only inside an isolated copied-state run."""
+
+    if not enabled:
+        yield
+        return
+    config = getattr(runtime, "config", None)
+    if not isinstance(config, dict):
+        raise ValueError("runtime.config must be a dict")
+    runtime_cfg = config.setdefault("runtime", {})
+    if not isinstance(runtime_cfg, dict):
+        raise ValueError("runtime.config['runtime'] must be a dict")
+    had_parallel = "league_parallel_games" in runtime_cfg
+    previous_parallel = runtime_cfg.get("league_parallel_games")
+    runtime_cfg["league_parallel_games"] = 2
+    try:
+        yield
+    finally:
+        if had_parallel:
+            runtime_cfg["league_parallel_games"] = previous_parallel
+        else:
+            runtime_cfg.pop("league_parallel_games", None)
+
+
 def run_live_evolution(
     runtime: Any,
     *,
@@ -109,8 +135,32 @@ def run_live_evolution(
     paths = getattr(runtime, "paths", None)
     if not isinstance(paths, dict) or "root" not in paths:
         raise ValueError("runtime must expose paths['root'] for Strength Lab state")
-    state_root = Path(paths["root"])
+    state_root = Path(paths["root"]).expanduser().resolve()
     strength_path = state_root / opts.strength_db_name
+
+    copy_validation = os.environ.get("DOGMATIST_V2_COPY_VALIDATION", "") == "1"
+    if copy_validation:
+        isolated_home = Path(os.environ.get("HOME", "")).expanduser().resolve()
+        expected_state = (isolated_home / ".darwinchess").resolve()
+        if state_root != expected_state:
+            raise RuntimeError(
+                "copied-state validation refused: runtime state root does not match isolated HOME "
+                f"({state_root} != {expected_state})"
+            )
+        if opts.persist_teacher:
+            progress("[dog_matist][copy-validation] forcing teacher replay persistence OFF")
+        opts = replace(opts, persist_teacher=False)
+        progress(
+            "DOGMATIST_UI " + json.dumps({
+                "phase": "copy_validation",
+                "copy_validation": {
+                    "enabled": True,
+                    "state_root": str(state_root),
+                    "teacher_persistence": False,
+                    "league_parallel_games": 2,
+                },
+            }, ensure_ascii=False)
+        )
 
     if opts.enable_parallel_league:
         install_parallel_league_signal_safety()
@@ -137,7 +187,7 @@ def run_live_evolution(
         if league_status_callback is not None:
             league_status_callback(payload)
 
-    with install_live_game_watchdog_policy(runtime, watchdog), StrengthStore(strength_path) as store:
+    with _copy_validation_runtime_overrides(runtime, copy_validation), install_live_game_watchdog_policy(runtime, watchdog), StrengthStore(strength_path) as store:
         coordinator = LiveStrengthCoordinator(runtime, store)
         runner = LiveEvolutionRunner(
             runtime,
