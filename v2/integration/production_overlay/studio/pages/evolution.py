@@ -37,6 +37,13 @@ def _hms(seconds: Any) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _pct(value: Any) -> str:
+    try:
+        return f"{100.0 * float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
 class EvolutionPage(QWidget):
     """Production V2 Evolution view built against the uploaded Studio source."""
 
@@ -177,6 +184,7 @@ class EvolutionPage(QWidget):
 
         info_grid = QGridLayout()
         info_grid.setHorizontalSpacing(12)
+        info_grid.setVerticalSpacing(12)
 
         strength = QFrame()
         strength.setObjectName("Panel")
@@ -230,13 +238,73 @@ class EvolutionPage(QWidget):
         self.league_table.setMinimumHeight(150)
         ll.addWidget(self.league_table)
         info_grid.addWidget(league, 0, 1)
+
+        reference = QFrame()
+        reference.setObjectName("Panel")
+        rf = QVBoxLayout(reference)
+        rf.setContentsMargins(14, 12, 14, 12)
+        rh = QHBoxLayout()
+        rh.addWidget(QLabel("CIVILIZATION STRENGTH · FROZEN REFERENCE"))
+        rh.addStretch()
+        self.reference_badge = QLabel("waiting")
+        self.reference_badge.setObjectName("RunBadge")
+        rh.addWidget(self.reference_badge)
+        rf.addLayout(rh)
+        rg = QGridLayout()
+        for col, text in enumerate(("Reference", "Subject", "Score", "Games")):
+            rg.addWidget(QLabel(text), 0, col)
+        self.reference_generation = QLabel("—")
+        self.reference_subject = QLabel("—")
+        self.reference_score = QLabel("—")
+        self.reference_games = QLabel("—")
+        for col, widget in enumerate((self.reference_generation, self.reference_subject, self.reference_score, self.reference_games)):
+            widget.setObjectName("CardValue")
+            rg.addWidget(widget, 1, col)
+        rf.addLayout(rg)
+        self.reference_trend = QLabel("Trend: waiting for fixed-reference rounds")
+        self.reference_trend.setObjectName("Subtle")
+        self.reference_trend.setWordWrap(True)
+        rf.addWidget(self.reference_trend)
+        info_grid.addWidget(reference, 1, 0)
+
+        safety = QFrame()
+        safety.setObjectName("Panel")
+        sf = QVBoxLayout(safety)
+        sf.setContentsMargins(14, 12, 14, 12)
+        s_head = QHBoxLayout()
+        s_head.addWidget(QLabel("GAME SAFETY"))
+        s_head.addStretch()
+        self.watchdog_badge = QLabel("budget never kills games")
+        self.watchdog_badge.setObjectName("RunBadge")
+        s_head.addWidget(self.watchdog_badge)
+        sf.addLayout(s_head)
+        wg = QGridLayout()
+        wg.addWidget(QLabel("No-progress bug threshold"), 0, 0)
+        wg.addWidget(QLabel("Emergency single-game ceiling"), 0, 1)
+        wg.addWidget(QLabel("Kill grace"), 0, 2)
+        self.watchdog_stall = QLabel("—")
+        self.watchdog_emergency = QLabel("—")
+        self.watchdog_grace = QLabel("—")
+        for col, widget in enumerate((self.watchdog_stall, self.watchdog_emergency, self.watchdog_grace)):
+            widget.setObjectName("CardValue")
+            wg.addWidget(widget, 1, col)
+        sf.addLayout(wg)
+        self.watchdog_note = QLabel(
+            "Healthy active games finish naturally even after the Night compute budget is reached."
+        )
+        self.watchdog_note.setObjectName("Subtle")
+        self.watchdog_note.setWordWrap(True)
+        sf.addWidget(self.watchdog_note)
+        info_grid.addWidget(safety, 1, 1)
+
         info_grid.setColumnStretch(0, 1)
         info_grid.setColumnStretch(1, 2)
         root.addLayout(info_grid)
 
         note = QLabel(
-            "Night time is now active-compute time: lid-close/process suspension is excluded. "
-            "League uses 2–3 killable game processes; when time or a safe-stop request arrives, already-started colour pairs finish and no new pair opens."
+            "Night time is an admission budget, not a chess clock. Lid-close/process suspension is excluded; "
+            "when the budget is reached, already-started games and their reverse-colour fairness legs finish naturally. "
+            "Only the separate conservative bug watchdog may terminate an obviously wedged worker."
         )
         note.setObjectName("InfoNote")
         note.setWordWrap(True)
@@ -357,7 +425,7 @@ class EvolutionPage(QWidget):
             if self.progress.isVisible():
                 self.progress.setRange(0, 0)
 
-        if normalized in {"arena", "promoted", "rejected"}:
+        if normalized in {"arena", "promoted", "rejected", "fixed-reference"}:
             self._reload_charts()
 
     def _ui_event(self, payload: object):
@@ -381,6 +449,16 @@ class EvolutionPage(QWidget):
             nested = parallel.get("league")
             self._apply_league(nested if isinstance(nested, dict) else parallel)
 
+        fixed = payload.get("fixed_reference")
+        if isinstance(fixed, dict):
+            self._apply_fixed_reference(fixed)
+        watchdog = payload.get("watchdog")
+        if isinstance(watchdog, dict):
+            self._apply_watchdog(watchdog)
+
+        if phase == "fixed-reference-error":
+            self.reference_badge.setText("DISABLED THIS RUN")
+            self.reference_trend.setText(str(payload.get("error") or "Reference integration error"))
         if phase == "safe-stop-requested":
             self.safe_stop.setText("Requested")
         for key in ("league_drain", "arena_drain"):
@@ -455,6 +533,52 @@ class EvolutionPage(QWidget):
             for col, value in enumerate(values):
                 self.league_table.setItem(row_index, col, QTableWidgetItem(str(value)))
 
+    def _apply_fixed_reference(self, fixed: dict[str, Any]):
+        reference = fixed.get("reference") if isinstance(fixed.get("reference"), dict) else {}
+        result = fixed.get("result") if isinstance(fixed.get("result"), dict) else None
+        active = fixed.get("active") if isinstance(fixed.get("active"), dict) else None
+        trend = fixed.get("trend") if isinstance(fixed.get("trend"), list) else []
+        ref_generation = reference.get("generation")
+        subject = fixed.get("subject_generation")
+        self.reference_generation.setText("—" if ref_generation is None else f"Gen{ref_generation} · FROZEN")
+        self.reference_subject.setText("—" if subject is None else f"Gen{subject}")
+
+        if result is not None:
+            self.reference_badge.setText("MEASURED")
+            self.reference_score.setText(_pct(result.get("score")))
+            self.reference_games.setText(str(result.get("games", "—")))
+        elif active is not None:
+            self.reference_badge.setText("MEASURING")
+            self.reference_score.setText("…")
+            self.reference_games.setText(str(active.get("results", 0)))
+        elif fixed.get("skipped_reason"):
+            self.reference_badge.setText("SKIPPED")
+            self.reference_score.setText("—")
+            self.reference_games.setText("—")
+        else:
+            self.reference_badge.setText("READY")
+
+        if trend:
+            pieces = []
+            for row in trend[-8:]:
+                if not isinstance(row, dict):
+                    continue
+                pieces.append(f"R{row.get('round_index', '?')} {_pct(row.get('score'))}")
+            self.reference_trend.setText("Trend: " + " → ".join(pieces) if pieces else "Trend: waiting")
+        else:
+            self.reference_trend.setText("Trend: waiting for fixed-reference rounds")
+
+    def _apply_watchdog(self, watchdog: dict[str, Any]):
+        self.watchdog_stall.setText(_hms(watchdog.get("stall_seconds")))
+        self.watchdog_emergency.setText(_hms(watchdog.get("emergency_game_seconds")))
+        grace = watchdog.get("kill_grace_seconds")
+        self.watchdog_grace.setText("—" if grace is None else f"{float(grace):.1f}s")
+        if watchdog.get("budget_interrupts_games") is False:
+            self.watchdog_badge.setText("BUDGET ≠ GAME TIMEOUT")
+            self.watchdog_note.setText(
+                "Healthy games are never stopped because the Night budget is exhausted; only an obvious stall or emergency ceiling can terminate a worker."
+            )
+
     def _reload_charts(self):
         try:
             generations = self.store.generations(limit=500)
@@ -477,11 +601,12 @@ class EvolutionPage(QWidget):
             "training": "Running the unchanged continual trainer through the Strength-aware replay mixer.",
             "population-train": "Shared training plus role-specific population branches.",
             "league": "2–3 colour-balanced League games run in killable worker processes.",
-            "arena": "Held-out challenger vs champion test; stop decisions happen only after a full colour pair.",
+            "arena": "Held-out challenger vs champion test; run time never terminates a healthy active game.",
+            "fixed-reference": "Measuring the strongest round subject against one immutable historical checkpoint.",
             "strength-guard": "Checking fixed-reference/engine evidence before adoption.",
             "promoted": "The challenger passed the gate and became champion.",
             "rejected": "The challenger failed the gate; the old champion remains active.",
-            "safe-stop-requested": "Stop requested; finishing already-started colour pair(s).",
+            "safe-stop-requested": "Stop requested; already-started games and fairness legs finish naturally.",
             "specialist-harvest": "Preserving useful specialist experience without discarding the overall loser.",
         }.get(stage, "")
 
@@ -493,6 +618,7 @@ class EvolutionPage(QWidget):
             "population-train": "population-train",
             "league": "league",
             "arena": "arena",
+            "fixed-reference": "strength-guard",
             "strength-guard": "strength-guard",
             "promoted": "promotion",
             "rejected": "promotion",
