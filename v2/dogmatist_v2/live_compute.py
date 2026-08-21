@@ -69,6 +69,7 @@ class HeartbeatComputeClock:
         self._excluded_sleep = 0.0
         self._paused_total = 0.0
         self._paused_at: float | None = None
+        self._forced_expiry = False
         self._lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -84,6 +85,18 @@ class HeartbeatComputeClock:
                 self._excluded_sleep += excluded
             self._last_pulse_at = current
             return excluded
+
+    def request_expiry(self) -> None:
+        """Force admission-budget expiry without terminating active work.
+
+        This is primarily useful for copied-state validation that needs to prove
+        the safe-drain path at a deterministic point. Runtime guards still decide
+        when already-started chess games may finish; this method never kills a
+        game or worker.
+        """
+        self.pulse()
+        with self._lock:
+            self._forced_expiry = True
 
     def pause(self) -> None:
         self.pulse()
@@ -120,24 +133,35 @@ class HeartbeatComputeClock:
 
     @property
     def remaining_seconds(self) -> float:
-        return max(0.0, self.budget_seconds - self.elapsed_seconds)
+        self.pulse()
+        with self._lock:
+            if self._forced_expiry:
+                return 0.0
+            elapsed, _ = self._elapsed_locked(float(self._now()))
+            return max(0.0, self.budget_seconds - elapsed)
 
     @property
     def expired(self) -> bool:
-        return self.elapsed_seconds >= self.budget_seconds
+        self.pulse()
+        with self._lock:
+            if self._forced_expiry:
+                return True
+            elapsed, _ = self._elapsed_locked(float(self._now()))
+            return elapsed >= self.budget_seconds
 
     def snapshot(self) -> dict[str, float | bool]:
         self.pulse()
         with self._lock:
             current = float(self._now())
             elapsed, paused = self._elapsed_locked(current)
+            expired = self._forced_expiry or elapsed >= self.budget_seconds
             snapshot = ComputeSnapshot(
                 budget_seconds=self.budget_seconds,
                 elapsed_seconds=elapsed,
-                remaining_seconds=max(0.0, self.budget_seconds - elapsed),
+                remaining_seconds=0.0 if self._forced_expiry else max(0.0, self.budget_seconds - elapsed),
                 excluded_sleep_seconds=self._excluded_sleep,
                 paused_seconds=paused,
-                expired=elapsed >= self.budget_seconds,
+                expired=expired,
             )
         return snapshot.as_dict()
 
