@@ -69,6 +69,25 @@ def _cycle_only_clock(cycles: int) -> HeartbeatComputeClock:
     return HeartbeatComputeClock(float(years) * 366.0 * 24.0 * 3600.0)
 
 
+def _copy_validation_parallel_games() -> int:
+    """Return the explicitly requested copied-state League width.
+
+    Two games remains the conservative default. Three is allowed only when the
+    isolated validation launcher opts in through a dedicated environment flag;
+    production/live state never reads this override because the copy-validation
+    guard itself must already be enabled.
+    """
+
+    raw = os.environ.get("DOGMATIST_V2_COPY_LEAGUE_PARALLEL", "2").strip() or "2"
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("DOGMATIST_V2_COPY_LEAGUE_PARALLEL must be 2 or 3") from exc
+    if value not in (2, 3):
+        raise ValueError("DOGMATIST_V2_COPY_LEAGUE_PARALLEL must be 2 or 3")
+    return value
+
+
 @contextmanager
 def _copy_validation_runtime_overrides(runtime: Any, enabled: bool) -> Iterator[None]:
     """Force conservative settings only inside an isolated copied-state run."""
@@ -84,7 +103,7 @@ def _copy_validation_runtime_overrides(runtime: Any, enabled: bool) -> Iterator[
         raise ValueError("runtime.config['runtime'] must be a dict")
     had_parallel = "league_parallel_games" in runtime_cfg
     previous_parallel = runtime_cfg.get("league_parallel_games")
-    runtime_cfg["league_parallel_games"] = 2
+    runtime_cfg["league_parallel_games"] = _copy_validation_parallel_games()
     try:
         yield
     finally:
@@ -139,6 +158,7 @@ def run_live_evolution(
     strength_path = state_root / opts.strength_db_name
 
     copy_validation = os.environ.get("DOGMATIST_V2_COPY_VALIDATION", "") == "1"
+    copy_parallel_games = 2
     if copy_validation:
         isolated_home = Path(os.environ.get("HOME", "")).expanduser().resolve()
         expected_state = (isolated_home / ".darwinchess").resolve()
@@ -147,6 +167,7 @@ def run_live_evolution(
                 "copied-state validation refused: runtime state root does not match isolated HOME "
                 f"({state_root} != {expected_state})"
             )
+        copy_parallel_games = _copy_validation_parallel_games()
         if opts.persist_teacher:
             progress("[dog_matist][copy-validation] forcing teacher replay persistence OFF")
         opts = replace(opts, persist_teacher=False)
@@ -157,7 +178,7 @@ def run_live_evolution(
                     "enabled": True,
                     "state_root": str(state_root),
                     "teacher_persistence": False,
-                    "league_parallel_games": 2,
+                    "league_parallel_games": copy_parallel_games,
                 },
             }, ensure_ascii=False)
         )
