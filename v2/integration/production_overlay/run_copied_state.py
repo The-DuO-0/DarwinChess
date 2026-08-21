@@ -47,10 +47,18 @@ class ValidationConsoleRenderer:
         if phase == "copy_validation":
             copy = payload.get("copy_validation")
             if isinstance(copy, dict):
+                suffix = " · budget-drain probe" if copy.get("expire_on_league_start") else ""
                 return (
                     "[validation] isolated copy · teacher OFF · "
-                    f"League {copy.get('league_parallel_games', '?')} parallel"
+                    f"League {copy.get('league_parallel_games', '?')} parallel{suffix}"
                 )
+
+        if phase == "validation_budget_expired":
+            active = int(payload.get("active_games_at_expiry", 0) or 0)
+            return (
+                f"[validation][budget] admission budget expired with {active} active League game(s); "
+                "they must finish naturally"
+            )
 
         if phase == "league":
             league = payload.get("league")
@@ -121,6 +129,7 @@ def build_plan(
     cycles: int | None,
     hours: float | None,
     league_parallel_games: int = 2,
+    expire_on_league_start: bool = False,
 ) -> dict[str, object]:
     source = Path(source_copy).expanduser().resolve()
     snapshot = Path(snapshot_state).expanduser().resolve()
@@ -158,25 +167,30 @@ def build_plan(
     else:
         command += ["--cycles", str(int(cycles or 1))]
 
+    environment = {
+        "HOME": str(validation_home),
+        "XDG_CONFIG_HOME": str(validation_home / ".config"),
+        "XDG_CACHE_HOME": str(validation_home / ".cache"),
+        "PYTHONNOUSERSITE": "1",
+        "DOGMATIST_V2_COPY_VALIDATION": "1",
+        "DOGMATIST_V2_COPY_LEAGUE_PARALLEL": str(int(league_parallel_games)),
+    }
+    if expire_on_league_start:
+        environment["DOGMATIST_V2_COPY_EXPIRE_ON_LEAGUE_START"] = "1"
+
     return {
         "source_copy": str(source),
         "snapshot_state": str(snapshot),
         "validation_home": str(validation_home),
         "live_source_state": str(live_source),
         "command": command,
-        "environment": {
-            "HOME": str(validation_home),
-            "XDG_CONFIG_HOME": str(validation_home / ".config"),
-            "XDG_CACHE_HOME": str(validation_home / ".cache"),
-            "PYTHONNOUSERSITE": "1",
-            "DOGMATIST_V2_COPY_VALIDATION": "1",
-            "DOGMATIST_V2_COPY_LEAGUE_PARALLEL": str(int(league_parallel_games)),
-        },
+        "environment": environment,
         "safety": {
             "teacher_persistence_forced_off": True,
             "league_parallel_games": int(league_parallel_games),
             "live_state_must_not_be_referenced": True,
             "run_budget_interrupts_healthy_games": False,
+            "expire_on_league_start": bool(expire_on_league_start),
         },
     }
 
@@ -185,10 +199,11 @@ def _validation_invariants(
     telemetry: ValidationTelemetry,
     *,
     expected_parallel_games: int,
+    expect_budget_probe: bool,
 ) -> dict[str, bool]:
     copy = telemetry.copy_validation or {}
     watchdog = telemetry.watchdog or {}
-    return {
+    invariants = {
         "copy_validation_event_seen": bool(copy.get("enabled")),
         "teacher_persistence_off": copy.get("teacher_persistence") is False,
         "copy_parallelism_matches_plan": int(copy.get("league_parallel_games", 0) or 0) == int(expected_parallel_games),
@@ -196,6 +211,11 @@ def _validation_invariants(
         "run_budget_does_not_interrupt_games": watchdog.get("budget_interrupts_games") is False,
         "no_watchdog_trip": not telemetry.timed_out_games,
     }
+    if expect_budget_probe:
+        invariants["budget_probe_event_seen"] = telemetry.phases.get("validation_budget_expired", 0) >= 1
+        invariants["budget_probe_finished_without_worker_failure"] = not telemetry.failed_games
+        invariants["budget_probe_final_clock_expired"] = bool((telemetry.final_compute or {}).get("expired"))
+    return invariants
 
 
 def _run_with_telemetry(
@@ -251,10 +271,13 @@ def _run_with_telemetry(
         expect_teacher_persistence=False,
         require_frozen_reference=True,
     )
-    expected_parallel = int(plan.get("safety", {}).get("league_parallel_games", 2))
+    safety = plan.get("safety", {})
+    expected_parallel = int(safety.get("league_parallel_games", 2)) if isinstance(safety, dict) else 2
+    expect_budget_probe = bool(safety.get("expire_on_league_start", False)) if isinstance(safety, dict) else False
     invariants = _validation_invariants(
         telemetry,
         expected_parallel_games=expected_parallel,
+        expect_budget_probe=expect_budget_probe,
     )
     passed = return_code == 0 and postflight.ok and all(invariants.values())
     summary = {
@@ -293,6 +316,14 @@ def main(argv: list[str] | None = None) -> int:
         default=2,
         help="copied-state League worker count; 2 is conservative, 3 is an explicit stress test",
     )
+    parser.add_argument(
+        "--expire-on-league-start",
+        action="store_true",
+        help=(
+            "copied-state safety probe: force the admission budget to expire only after real League "
+            "workers are already active; active games must finish naturally"
+        ),
+    )
     limit = parser.add_mutually_exclusive_group()
     limit.add_argument("--cycles", type=int, default=1)
     limit.add_argument("--hours", type=float)
@@ -316,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         cycles=cycles,
         hours=args.hours,
         league_parallel_games=args.league_parallel,
+        expire_on_league_start=bool(args.expire_on_league_start),
     )
     preflight = validate_copied_state(args.snapshot_state, include_spawn_probe=True)
     payload = {"preflight": preflight.as_dict(), "plan": plan, "will_run": bool(args.run)}
