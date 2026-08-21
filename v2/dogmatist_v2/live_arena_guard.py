@@ -66,8 +66,8 @@ def build_budget_aware_arena(
                                 return
                             state.pairs_started += 1
                             yield item
-                            # The production loop requests the next item only after
-                            # both colours of this opening have completed.
+                            # Production asks for the next opening only after both
+                            # colour legs of the current opening have completed.
                             state.pairs_completed += 1
                             if bool(clock.expired):
                                 state.request_drain("compute_budget_exhausted")
@@ -87,7 +87,6 @@ def build_budget_aware_arena(
                 try:
                     result = replace(result, promoted=False)
                 except TypeError:
-                    # Shape-compatible fallback for a non-dataclass test double.
                     try:
                         result.promoted = False
                     except Exception:
@@ -101,10 +100,9 @@ def build_budget_aware_arena(
 class LiveArenaDrainOverride:
     """Temporary pair-boundary budget hook for production ``Arena.compare``.
 
-    The runtime keeps its original ``gate_challenger`` method. We only replace the
-    ``Arena`` class it instantiates. If the comparison is budget-drained, the
-    production gate sees a non-promotion result and the generation is relabelled
-    ``aborted`` afterwards rather than being treated as chessically rejected.
+    Minimal/fake runtimes used by smoke tests may not expose the production
+    ``Arena`` symbol at all. In that case this context is deliberately a no-op;
+    the real Mac runtime does expose it and receives the full pair-boundary guard.
     """
 
     def __init__(
@@ -123,6 +121,7 @@ class LiveArenaDrainOverride:
         self._original_gate: Any | None = None
         self._gate_had_instance_attr = False
         self._gate_instance_value: Any = None
+        self._disabled = False
 
     def _module(self) -> Any:
         if self.runtime_module is not None:
@@ -132,6 +131,10 @@ class LiveArenaDrainOverride:
     def __enter__(self) -> "LiveArenaDrainOverride":
         module = self._module()
         self.runtime_module = module
+        if not hasattr(module, "Arena") or not hasattr(self.runtime, "gate_challenger"):
+            self._disabled = True
+            return self
+
         self._base_arena = module.Arena
         module.Arena = build_budget_aware_arena(
             self._base_arena,
@@ -147,9 +150,6 @@ class LiveArenaDrainOverride:
         original_gate = self._original_gate
 
         def guarded_gate(challenger_id: int, challenger: Any, *, games: int | None = None) -> Any:
-            # If budget was already exhausted, the League guard normally catches
-            # this before Arena. Keep a local guard too so this context is safe to
-            # use independently.
             if bool(self.clock.expired):
                 self.state.request_drain("compute_budget_exhausted")
                 from .live_league_guard import DrainedArenaResult
@@ -206,6 +206,8 @@ class LiveArenaDrainOverride:
         return self
 
     def __exit__(self, *_: object) -> None:
+        if self._disabled:
+            return
         module = self.runtime_module
         if module is not None and self._base_arena is not None:
             module.Arena = self._base_arena
