@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .live_compute import HeartbeatComputeClock
+from .live_game_watchdog import LiveGameWatchdogPolicy, install_live_game_watchdog_policy
 from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
 from .live_runtime_overlay import LiveStrengthCoordinator
 from .live_signal_safety import install_parallel_league_signal_safety
@@ -23,6 +24,9 @@ class LiveEvolutionOptions:
     parallel_league_fail_open: bool = True
     handle_sigint: bool = True
     strength_db_name: str = "strength_v2.sqlite3"
+    watchdog_stall_seconds: float = 30.0 * 60.0
+    watchdog_emergency_game_seconds: float = 2.0 * 60.0 * 60.0
+    watchdog_kill_grace_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         if self.targeted_examples <= 0:
@@ -31,6 +35,19 @@ class LiveEvolutionOptions:
             raise ValueError("teacher_request_cap must be non-negative")
         if not self.strength_db_name.strip():
             raise ValueError("strength_db_name must be non-empty")
+        # Validate the same policy that production will install.
+        LiveGameWatchdogPolicy(
+            stall_seconds=self.watchdog_stall_seconds,
+            emergency_game_seconds=self.watchdog_emergency_game_seconds,
+            kill_grace_seconds=self.watchdog_kill_grace_seconds,
+        )
+
+    def watchdog_policy(self) -> LiveGameWatchdogPolicy:
+        return LiveGameWatchdogPolicy(
+            stall_seconds=self.watchdog_stall_seconds,
+            emergency_game_seconds=self.watchdog_emergency_game_seconds,
+            kill_grace_seconds=self.watchdog_kill_grace_seconds,
+        )
 
 
 def _cycle_only_clock(cycles: int) -> HeartbeatComputeClock:
@@ -54,6 +71,12 @@ def run_live_evolution(
     Strength Lab persists into a separate small SQLite database under the runtime
     state root. The live replay/checkpoint database remains owned by MemoryStore.
     Teacher labels deliberately default OFF until copied-state Mac validation.
+
+    The active-compute budget is only an *admission* budget. Reaching 8/10 hours
+    never terminates a chess game already in progress. Existing League/Arena games
+    finish naturally (and a missing reverse-colour leg is completed for fairness),
+    then no new pair is admitted. A child process is force-stopped only by the
+    separate, deliberately generous bug watchdog installed below.
 
     Child League workers install SIGINT-ignore behavior before the run. This is
     important on macOS terminals: Ctrl-C targets the whole foreground process
@@ -85,7 +108,13 @@ def run_live_evolution(
     else:
         clock = _cycle_only_clock(int(cycles or 1))
 
-    with StrengthStore(strength_path) as store:
+    watchdog = opts.watchdog_policy()
+    progress(
+        "[dog_matist][watchdog] run budget never interrupts active games; "
+        f"stall={watchdog.stall_seconds:.0f}s emergency_game={watchdog.emergency_game_seconds:.0f}s"
+    )
+
+    with install_live_game_watchdog_policy(runtime, watchdog), StrengthStore(strength_path) as store:
         coordinator = LiveStrengthCoordinator(runtime, store)
         runner = LiveEvolutionRunner(
             runtime,
