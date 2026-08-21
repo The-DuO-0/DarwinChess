@@ -7,7 +7,11 @@ import os
 from pathlib import Path
 import subprocess
 
-from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
+from dogmatist_v2.mac_preflight import (
+    audit_copied_state_after_run,
+    load_snapshot_manifest,
+    validate_copied_state,
+)
 from dogmatist_v2.validation_telemetry import ValidationTelemetry
 
 
@@ -75,7 +79,19 @@ def build_plan(
     }
 
 
-def _run_with_telemetry(plan: dict[str, object]) -> tuple[int, Path, Path, ValidationTelemetry]:
+def _validation_invariants(telemetry: ValidationTelemetry) -> dict[str, bool]:
+    copy = telemetry.copy_validation or {}
+    watchdog = telemetry.watchdog or {}
+    return {
+        "copy_validation_event_seen": bool(copy.get("enabled")),
+        "teacher_persistence_off": copy.get("teacher_persistence") is False,
+        "initial_parallelism_at_most_two": telemetry.max_parallel_games <= 2,
+        "run_budget_does_not_interrupt_games": watchdog.get("budget_interrupts_games") is False,
+        "no_watchdog_trip": not telemetry.timed_out_games,
+    }
+
+
+def _run_with_telemetry(plan: dict[str, object]) -> tuple[int, Path, Path, ValidationTelemetry, bool]:
     validation_home = Path(str(plan["validation_home"]))
     report_dir = validation_home / "dogmatist_v2_validation_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -107,21 +123,29 @@ def _run_with_telemetry(plan: dict[str, object]) -> tuple[int, Path, Path, Valid
             telemetry.feed_line(line.rstrip("\n"))
         return_code = int(process.wait())
 
-    postflight = validate_copied_state(plan["snapshot_state"], include_spawn_probe=False)
+    postflight = audit_copied_state_after_run(
+        plan["snapshot_state"],
+        expect_teacher_persistence=False,
+        require_frozen_reference=True,
+    )
+    invariants = _validation_invariants(telemetry)
+    passed = return_code == 0 and postflight.ok and all(invariants.values())
     summary = {
         "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "return_code": return_code,
         "plan": plan,
         "telemetry": telemetry.as_dict(),
+        "runtime_invariants": invariants,
         "postflight": postflight.as_dict(),
-        "pass": return_code == 0 and postflight.ok and not telemetry.timed_out_games,
+        "pass": passed,
         "note": (
-            "A watchdog timeout is treated as a validation failure to investigate; "
-            "reaching the run budget while games continue normally is not a failure."
+            "A watchdog timeout is a validation failure to investigate; reaching the run budget while "
+            "healthy games continue normally is explicitly not a failure. Teacher replay must remain "
+            "absent and all checkpoint/reference paths must remain inside the copied state."
         ),
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    return return_code, log_path, summary_path, telemetry
+    return return_code, log_path, summary_path, telemetry, passed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -163,13 +187,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\nDRY RUN ONLY. Add --run only after reviewing the isolated HOME and checkpoint paths above.")
         return 0
 
-    return_code, log_path, summary_path, telemetry = _run_with_telemetry(plan)
+    return_code, log_path, summary_path, telemetry, passed = _run_with_telemetry(plan)
     print("\nCopied-state validation artifacts:")
     print(f"  log:     {log_path}")
     print(f"  summary: {summary_path}")
     if telemetry.timed_out_games:
         print(f"  WATCHDOG TRIPS: {sorted(telemetry.timed_out_games)}")
-    return return_code
+    print(f"  validation: {'PASS' if passed else 'FAIL'}")
+    return return_code if return_code != 0 else (0 if passed else 3)
 
 
 if __name__ == "__main__":
