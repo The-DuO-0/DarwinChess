@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -124,6 +125,17 @@ def run_live_evolution(
         "[dog_matist][watchdog] run budget never interrupts active games; "
         f"stall={watchdog.stall_seconds:.0f}s emergency_game={watchdog.emergency_game_seconds:.0f}s"
     )
+    progress(
+        "DOGMATIST_UI " + json.dumps({
+            "phase": "watchdog_policy",
+            "watchdog": watchdog.ui_payload(),
+        }, ensure_ascii=False)
+    )
+
+    def fixed_status(payload: dict[str, object]) -> None:
+        progress("DOGMATIST_UI " + json.dumps(payload, ensure_ascii=False, default=str))
+        if league_status_callback is not None:
+            league_status_callback(payload)
 
     with install_live_game_watchdog_policy(runtime, watchdog), StrengthStore(strength_path) as store:
         coordinator = LiveStrengthCoordinator(runtime, store)
@@ -152,7 +164,7 @@ def run_live_evolution(
                 pair_count=opts.fixed_reference_pairs,
                 watchdog_policy=watchdog,
                 stop_requested=lambda: runner._stop_requested,
-                status_callback=league_status_callback,
+                status_callback=fixed_status,
             )
             try:
                 reference = fixed.ensure_reference()
@@ -160,6 +172,24 @@ def run_live_evolution(
                     "[dog_matist][fixed-reference] "
                     f"reference={reference.reference_id} generation={reference.generation} "
                     f"pairs/round={opts.fixed_reference_pairs}"
+                )
+                progress(
+                    "DOGMATIST_UI " + json.dumps({
+                        "phase": "fixed_reference_ready",
+                        "fixed_reference": {
+                            "reference": reference.as_dict(),
+                            "trend": [
+                                {
+                                    "round_index": row.round_index,
+                                    "champion_generation": row.champion_generation,
+                                    "score": row.fixed_reference_score,
+                                    "games": row.paired_games,
+                                    "promoted": row.promoted,
+                                }
+                                for row in store.round_history(limit=8)
+                            ],
+                        },
+                    }, ensure_ascii=False, default=str)
                 )
                 fixed_override = LiveFixedReferenceCycleOverride(runtime, fixed)
                 history = store.round_history(limit=1)
@@ -176,6 +206,13 @@ def run_live_evolution(
                 progress(
                     "[dog_matist][fixed-reference] disabled for this run: "
                     f"{type(exc).__name__}: {exc}"
+                )
+                progress(
+                    "DOGMATIST_UI " + json.dumps({
+                        "phase": "fixed_reference_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "fallback": "ordinary_evolution_continues",
+                    }, ensure_ascii=False)
                 )
 
         with fixed_fail_context, fixed_context:
