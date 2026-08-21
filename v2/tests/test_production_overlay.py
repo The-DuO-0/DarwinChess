@@ -39,6 +39,16 @@ def test_selfplay_drop_in_leaves_first_ctrl_c_to_parent():
     assert "initializer=_worker_init" in source
 
 
+def test_studio_surface_explains_admission_budget_reference_and_bug_watchdog():
+    source = (OVERLAY / "studio" / "pages" / "evolution.py").read_text(encoding="utf-8")
+    assert "CIVILIZATION STRENGTH · FROZEN REFERENCE" in source
+    assert "GAME SAFETY" in source
+    assert "BUDGET ≠ GAME TIMEOUT" in source
+    assert "_apply_fixed_reference" in source
+    assert "_apply_watchdog" in source
+    assert "Night time is an admission budget, not a chess clock" in source
+
+
 def test_installer_patches_exact_uploaded_pyproject_and_cli_shape():
     installer = _load_installer()
     pyproject = '[tool.setuptools.packages.find]\nwhere = ["."]\ninclude = ["darwinchess*", "studio*"]\n'
@@ -61,3 +71,7 @@ def test_installer_patches_exact_uploaded_pyproject_and_cli_shape():
     assert "LiveEvolutionOptions" in patched_cli
     assert "persist_teacher" in patched_cli
     assert "parallel_league" in patched_cli
+    assert "watchdog_stall_seconds" in patched_cli
+    assert "watchdog_emergency_game_seconds" in patched_cli
+    assert "fixed_reference_pairs" in patched_cli
+    assert "fixed_reference_fail_open" in patched_cli
