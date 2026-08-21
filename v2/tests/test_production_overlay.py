@@ -27,6 +27,8 @@ def test_drop_in_sources_are_syntax_valid_without_importing_runtime_dependencies
         OVERLAY / "darwinchess" / "parallel_selfplay.py",
         OVERLAY / "studio" / "backend.py",
         OVERLAY / "studio" / "pages" / "evolution.py",
+        OVERLAY / "prepare_mac_validation.py",
+        OVERLAY / "run_copied_state.py",
     ):
         source = path.read_text(encoding="utf-8")
         compile(source, str(path), "exec")
@@ -47,6 +49,14 @@ def test_studio_surface_explains_admission_budget_reference_and_bug_watchdog():
     assert "_apply_fixed_reference" in source
     assert "_apply_watchdog" in source
     assert "Night time is an admission budget, not a chess clock" in source
+
+
+def test_copy_run_harness_requires_explicit_run_and_isolated_home():
+    source = (OVERLAY / "run_copied_state.py").read_text(encoding="utf-8")
+    assert "DOGMATIST_V2_COPY_VALIDATION" in source
+    assert 'snapshot.name != ".darwinchess"' in source
+    assert '"--run"' in source
+    assert '"HOME": str(validation_home)' in source
 
 
 def test_installer_patches_exact_uploaded_pyproject_and_cli_shape():
