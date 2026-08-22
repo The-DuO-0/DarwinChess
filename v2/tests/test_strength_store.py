@@ -111,8 +111,10 @@ def test_opening_bucket_stats_and_filtered_sampling(tmp_path):
                 ),
                 observed_at=NOW,
             )
+        # A later Reti failure should remain in the general hard pool, but it must
+        # not by itself prove that the Reti opening was the source of the problem.
         store.upsert_hard_position(
-            HardPositionEvidence("reti-0 w - - 0 1", "Reti", 54, "selfplay", 0.3, 0.1, 0.2, 18),
+            HardPositionEvidence("reti-0 w - - 0 1", "Reti", 54, "selfplay", 0.9, 0.8, 0.8, 18),
             observed_at=NOW,
         )
         focus = store.sample_hard_positions(
@@ -124,7 +126,7 @@ def test_opening_bucket_stats_and_filtered_sampling(tmp_path):
         assert {row.opening_bucket for row in focus} == {"Queen's Gambit"}
         stats = {row["opening_bucket"]: row for row in store.opening_bucket_stats()}
         assert stats["Queen's Gambit"]["hard_positions"] == 3
-        assert stats["Queen's Gambit"]["max_priority"] > stats["Reti"]["max_priority"]
+        assert "Reti" not in stats
 
 
 def test_engine_revision_is_adopted_only_after_gate_accepts(tmp_path):
