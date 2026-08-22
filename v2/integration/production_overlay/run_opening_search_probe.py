@@ -6,10 +6,14 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import unicodedata
 from typing import Any
 
 from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
 from dogmatist_v2.opening_stability import OpeningSearchObservation, build_stability_report
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
 def _json_objects(text: str):
@@ -43,6 +47,19 @@ def _first(value: Any, keys: tuple[str, ...]) -> Any | None:
     return None
 
 
+def _normalize_production_text(text: str) -> str:
+    """Normalize terminal-oriented analyze output before regex parsing.
+
+    The Mac CLI is human-facing, so its output may contain ANSI escapes,
+    full-width punctuation, non-breaking spaces, or terminal line wrapping.
+    None of those should make a copied-state diagnostic fail.
+    """
+
+    without_ansi = _ANSI_ESCAPE_RE.sub("", text)
+    normalized = unicodedata.normalize("NFKC", without_ansi)
+    return normalized.replace("\u00a0", " ")
+
+
 def _parse_production_text(text: str) -> dict[str, object] | None:
     """Parse the human-readable output emitted by the production ``analyze`` CLI.
 
@@ -50,26 +67,43 @@ def _parse_production_text(text: str) -> dict[str, object] | None:
 
         我会走 Nf3 (g1f3)。当前搜索评价约 +51cp ... 搜索深度 3，访问 6657 个节点；...
 
-    Keep this fallback deliberately narrow: the UCI move inside parentheses is
-    authoritative, while SAN/localized prose is display-only. JSON remains the
-    preferred format if production adds it later.
+    JSON remains preferred when available. For human-readable output, the UCI
+    move inside parentheses is authoritative. Parsing deliberately does *not*
+    depend on the SAN token or exact punctuation because production formatting
+    can vary across Terminal/localization builds.
     """
 
+    normalized = _normalize_production_text(text)
+    if "我会走" not in normalized:
+        return None
+
+    # Do not tie this to the display SAN. Find the first UCI move in parentheses
+    # after the human-facing move sentence. NFKC above converts full-width
+    # parentheses to ASCII and ANSI stripping handles colored terminal output.
+    summary_tail = normalized.split("我会走", 1)[1]
     move_match = re.search(
-        r"我会走\s+[^\s(。]+\s*\(([a-h][1-8][a-h][1-8][qrbn]?)\)",
-        text,
-        flags=re.IGNORECASE,
+        r"\(\s*([a-h][1-8][a-h][1-8][qrbn]?)\s*\)",
+        summary_tail,
+        flags=re.IGNORECASE | re.DOTALL,
     )
+    if move_match is None:
+        # Defensive fallback for a future formatter that drops parentheses but
+        # keeps an explicit UCI token near the summary.
+        move_match = re.search(
+            r"\b([a-h][1-8][a-h][1-8][qrbn]?)\b",
+            summary_tail,
+            flags=re.IGNORECASE,
+        )
     if move_match is None:
         return None
 
     score_match = re.search(
         r"当前搜索评价约\s*([+-]?\d+(?:\.\d+)?)\s*cp",
-        text,
+        normalized,
         flags=re.IGNORECASE,
     )
-    depth_match = re.search(r"搜索深度\s*(\d+)", text)
-    nodes_match = re.search(r"访问\s*(\d+)\s*个节点", text)
+    depth_match = re.search(r"搜索深度\s*(\d+)", normalized)
+    nodes_match = re.search(r"访问\s*(\d+)\s*个节点", normalized)
 
     return {
         "move": move_match.group(1).lower(),
