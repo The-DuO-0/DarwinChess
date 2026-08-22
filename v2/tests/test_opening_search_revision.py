@@ -3,6 +3,7 @@ from dogmatist_v2.opening_search_revision import (
     OpeningSearchR2Policy,
     OpeningSearchRevisionPlan,
     candidate_scores,
+    select_verification_candidates,
 )
 from dogmatist_v2.opening_stability import OpeningSearchObservation, build_stability_report
 
@@ -34,7 +35,7 @@ def _gen54_probe_report():
     return build_stability_report(54, 2, 3, rows)
 
 
-def test_real_gen54_probe_activates_r2b_revision_candidate():
+def test_real_gen54_probe_activates_r2c_revision_candidate():
     report = _gen54_probe_report()
     assert report.move_flips == 6
     assert report.flip_rate == 0.75
@@ -42,7 +43,7 @@ def test_real_gen54_probe_activates_r2b_revision_candidate():
     plan = OpeningSearchRevisionPlan.from_stability_report(report)
     assert plan.enabled is True
     assert plan.generation == 54
-    assert plan.revision_id == "search-r2b-opening-confidence"
+    assert plan.revision_id == "search-r2c-selective-root"
     assert plan.policy.extra_depth == 1
     assert plan.policy.always_verify_plies == 0
     assert plan.policy.max_extra_searches == 3
@@ -66,6 +67,48 @@ def test_real_initial_h4_case_still_deepens_from_small_margin():
     assert decision.deepen is True
     assert decision.target_depth == 3
     assert decision.reason == "shallow candidate margin is small"
+
+
+def test_selective_pool_is_bounded_and_keeps_previous_iteration_move():
+    rows = candidate_scores(
+        [
+            ("h2h4", -35.0),
+            ("d2d4", -49.0),
+            ("b1a3", -49.0),
+            ("b1c3", -52.0),
+            ("a2a3", -58.0),
+            ("c2c3", -61.0),
+            ("g1f3", -64.0),
+            ("e2e4", -66.0),
+            ("f2f3", -160.0),
+            ("g2g4", -190.0),
+        ]
+    )
+    selected = select_verification_candidates(
+        rows,
+        previous_iteration_move="g1f3",
+        min_candidates=4,
+        max_candidates=8,
+        score_window_cp=90.0,
+    )
+    assert selected[0] == "h2h4"
+    assert "g1f3" in selected
+    assert len(selected) <= 8
+    assert "g2g4" not in selected
+
+
+def test_selective_pool_can_reinsert_previous_move_when_at_capacity():
+    rows = candidate_scores([(f"m{i}", 100.0 - i) for i in range(10)])
+    selected = select_verification_candidates(
+        rows,
+        previous_iteration_move="oldpv",
+        min_candidates=4,
+        max_candidates=6,
+        score_window_cp=200.0,
+    )
+    assert len(selected) == 6
+    assert selected[0] == "m0"
+    assert "oldpv" in selected
 
 
 def test_later_opening_ply_deepens_when_candidate_margin_is_small():
