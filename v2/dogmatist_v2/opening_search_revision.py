@@ -61,14 +61,14 @@ class OpeningDeepeningDecision:
 class OpeningSearchR2Policy:
     """Evidence-gated opening-only +1-ply stabilization candidate.
 
-    The policy is intentionally conservative about compute.  It can only fire
+    The policy is intentionally conservative about compute. It can only fire
     during the first ``opening_plies`` half-moves and can deepen at most
-    ``max_extra_searches`` times per game.  The first few plies are always
+    ``max_extra_searches`` times per game. The first few plies are always
     verified because the real Gen54 probe showed pathological root instability;
     later opening plies are verified only when the shallow search already looks
     uncertain.
 
-    This is an engine-revision *candidate*, not a production default.  It must
+    This is an engine-revision *candidate*, not a production default. It must
     still pass frozen-weight A/B strength and compute-cost gates before adoption.
     """
 
@@ -117,6 +117,49 @@ class OpeningSearchR2Policy:
         if margin is not None and margin <= self.candidate_margin_cp:
             return OpeningDeepeningDecision(True, target, "shallow candidate margin is small")
         return OpeningDeepeningDecision(False, target, "shallow opening search looks stable")
+
+
+@dataclass
+class OpeningSearchR2Session:
+    """Track the revision's per-game compute budget for one searcher instance.
+
+    Production self-play may reuse one searcher for both colors, while Arena may
+    use one searcher for only one side. In both cases the absolute game ply rises
+    monotonically during a game. If a later search call arrives at an equal or
+    smaller absolute ply, treat it as a new game and reset the extra-search budget.
+    """
+
+    policy: OpeningSearchR2Policy
+    extra_searches_used: int = 0
+    last_absolute_ply: int | None = None
+    total_extra_searches: int = 0
+
+    def prepare_position(self, absolute_ply: int) -> None:
+        if absolute_ply <= 0:
+            raise ValueError("absolute_ply must be positive")
+        if self.last_absolute_ply is not None and absolute_ply <= self.last_absolute_ply:
+            self.extra_searches_used = 0
+        self.last_absolute_ply = int(absolute_ply)
+
+    def decide(self, evidence: OpeningSearchEvidence) -> OpeningDeepeningDecision:
+        self.prepare_position(evidence.ply)
+        decision = self.policy.decide(
+            evidence,
+            extra_searches_used=self.extra_searches_used,
+        )
+        if decision.deepen:
+            self.extra_searches_used += 1
+            self.total_extra_searches += 1
+        return decision
+
+
+def absolute_game_ply(*, fullmove_number: int, white_to_move: bool) -> int:
+    """Return a 1-based absolute half-move index from FEN counters."""
+
+    if fullmove_number <= 0:
+        raise ValueError("fullmove_number must be positive")
+    completed = (int(fullmove_number) - 1) * 2
+    return completed + (1 if white_to_move else 2)
 
 
 @dataclass(frozen=True)
