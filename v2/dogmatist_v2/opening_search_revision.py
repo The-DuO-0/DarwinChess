@@ -61,12 +61,12 @@ class OpeningDeepeningDecision:
 class OpeningSearchR2Policy:
     """Confidence-gated opening-only +1-ply stabilization candidate.
 
-    The first Gen54 implementation (r2a) verified too many early plies and cost
-    ~1.65x wall time in the first real Mac smoke test.  r2b therefore removes
-    unconditional early verification: it only spends the extra ply when the
-    already-computed shallow result looks uncertain.
+    r2a verified too many early plies and cost ~1.65x wall time. r2b removed
+    unconditional verification, but the first Mac smoke still cost ~1.61x.
+    r2c keeps this confidence gate and separately limits the *root moves* that
+    receive the expensive +1-ply verification.
 
-    No opening names, book moves, or Stockfish knowledge are used here.  The
+    No opening names, book moves, or Stockfish knowledge are used here. The
     shallow search must provide its own evidence that another ply is worth the
     compute.
     """
@@ -115,10 +115,6 @@ class OpeningSearchR2Policy:
 
         swing = evidence.iteration_score_swing_cp
         margin = evidence.candidate_margin_cp
-
-        # A naked depth-to-depth move flip can be harmless at depth 1 -> 2 and
-        # was firing too often in r2a.  Require a meaningful score swing before
-        # the flip itself justifies another ply.
         if (
             evidence.iteration_move_flip
             and swing is not None
@@ -134,13 +130,7 @@ class OpeningSearchR2Policy:
 
 @dataclass
 class OpeningSearchR2Session:
-    """Track the revision's per-game compute budget for one searcher instance.
-
-    Production self-play may reuse one searcher for both colors, while Arena may
-    use one searcher for only one side. In both cases the absolute game ply rises
-    monotonically during a game. If a later search call arrives at an equal or
-    smaller absolute ply, treat it as a new game and reset the extra-search budget.
-    """
+    """Track the revision's per-game compute budget for one searcher instance."""
 
     policy: OpeningSearchR2Policy
     extra_searches_used: int = 0
@@ -175,6 +165,63 @@ def absolute_game_ply(*, fullmove_number: int, white_to_move: bool) -> int:
     return completed + (1 if white_to_move else 2)
 
 
+def select_verification_candidates(
+    candidates: Iterable[CandidateScore],
+    *,
+    previous_iteration_move: str | None = None,
+    min_candidates: int = 4,
+    max_candidates: int = 8,
+    score_window_cp: float = 90.0,
+) -> tuple[str, ...]:
+    """Choose a bounded root set for the expensive +1-ply verification.
+
+    The shallow search remains the source of all candidates. We always retain a
+    small top set, then keep additional near-best moves up to ``max_candidates``.
+    The previous iterative-deepening best move is also preserved because the real
+    Gen54 pathology can hide a good move below the shallow top few. This is not an
+    opening book: no move is named or preferred by chess theory.
+    """
+
+    if min_candidates < 1:
+        raise ValueError("min_candidates must be positive")
+    if max_candidates < min_candidates:
+        raise ValueError("max_candidates must be >= min_candidates")
+    if score_window_cp < 0:
+        raise ValueError("score_window_cp must be non-negative")
+
+    rows = sorted(
+        (CandidateScore(str(row.move), float(row.score_cp)) for row in candidates),
+        key=lambda row: row.score_cp,
+        reverse=True,
+    )
+    if not rows:
+        return ()
+
+    best_score = rows[0].score_cp
+    selected: list[str] = []
+    for index, row in enumerate(rows):
+        if len(selected) >= max_candidates:
+            break
+        if index < min_candidates or row.score_cp >= best_score - score_window_cp:
+            if row.move not in selected:
+                selected.append(row.move)
+
+    previous = str(previous_iteration_move) if previous_iteration_move else None
+    if previous and previous not in selected:
+        if len(selected) < max_candidates:
+            selected.append(previous)
+        else:
+            # Preserve the current shallow best and replace the least-priority
+            # selected alternative with the previous iteration's principal move.
+            selected[-1] = previous
+
+    deduped: list[str] = []
+    for move in selected:
+        if move not in deduped:
+            deduped.append(move)
+    return tuple(deduped[:max_candidates])
+
+
 @dataclass(frozen=True)
 class OpeningSearchRevisionPlan:
     revision_id: str
@@ -191,7 +238,7 @@ class OpeningSearchRevisionPlan:
         cls,
         report: OpeningSearchStabilityReport,
         *,
-        revision_id: str = "search-r2b-opening-confidence",
+        revision_id: str = "search-r2c-selective-root",
         policy: OpeningSearchR2Policy | None = None,
     ) -> "OpeningSearchRevisionPlan":
         chosen = policy or OpeningSearchR2Policy()
