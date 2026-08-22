@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable
 
 from .live_bridge import AlphaBetaTeacherAdapter, LiveGameEvidenceBridge, TeacherReplayTarget
 from .live_replay import LiveReplayMixSampler, LiveReplayOverride
+from .opening_lab import OpeningRepairPlan, OpeningWeaknessController
 from .strength_lab import StrengthLabController, StrengthLabPlan
 from .strength_pipeline import StrengthPipelinePlanner, StrengthRoundRecipe
 from .strength_store import StrengthStore
@@ -15,12 +16,7 @@ from .strength_store import StrengthStore
 
 @dataclass(frozen=True)
 class LiveReplayExample:
-    """Structural twin of production ``darwinchess.memory.ReplayExample``.
-
-    ``MemoryStore.add_game`` only reads attributes from examples, so keeping this
-    tiny local dataclass lets the V2 package stay independent from the live
-    package at import time while remaining directly insertable in production.
-    """
+    """Structural twin of production ``darwinchess.memory.ReplayExample``."""
 
     fen: str
     move_uci: str
@@ -41,6 +37,7 @@ class LiveStrengthRoundReport:
     captured_positions: int
     teacher_examples: int
     teacher_game_ids: tuple[str, ...]
+    opening_repair: OpeningRepairPlan | None = None
 
     def ui_payload(self) -> dict[str, object]:
         return {
@@ -51,22 +48,19 @@ class LiveStrengthRoundReport:
             "teacher_game_ids": list(self.teacher_game_ids),
             "plan": self.plan.ui_payload(),
             "recipe": self.recipe.ui_payload(),
+            "opening_repair": (
+                self.opening_repair.ui_payload() if self.opening_repair is not None else None
+            ),
         }
 
 
 class LiveStrengthCoordinator:
     """Narrow production overlay for the supplied dog_matist-2.0 runtime.
 
-    The live runtime can keep its existing ``MemoryStore``, ``AlphaBetaSearcher``
-    and ``ContinualTrainer``. This coordinator only adds three bounded actions:
-
-    1. reconstruct just-finished self-play records from the existing SQLite rows
-       and persist difficult positions in the separate ``StrengthStore``;
-    2. build the Strength Lab recipe from durable history;
-    3. run a small number of self-teacher alpha-beta searches and insert their
-       labels back through the existing ``MemoryStore.add_game`` replay path.
-
-    No checkpoint or optimizer mutation happens here.
+    The live runtime keeps its MemoryStore, AlphaBetaSearcher, ContinualTrainer and
+    optimizer. V2 adds compact hard-position memory, opening-weakness targeting and
+    bounded deeper self-search. Opening names are telemetry labels only; no book
+    moves are injected and unknown/frontier openings remain eligible for training.
     """
 
     def __init__(
@@ -75,6 +69,7 @@ class LiveStrengthCoordinator:
         store: StrengthStore,
         *,
         controller: StrengthLabController | None = None,
+        opening_controller: OpeningWeaknessController | None = None,
         evidence_bridge: LiveGameEvidenceBridge | None = None,
         teacher_adapter: AlphaBetaTeacherAdapter | None = None,
         board_factory: Callable[[str], Any] | None = None,
@@ -82,13 +77,22 @@ class LiveStrengthCoordinator:
         self.runtime = runtime
         self.store = store
         self.controller = controller or StrengthLabController()
+        self.opening_controller = opening_controller or OpeningWeaknessController()
         self.evidence_bridge = evidence_bridge or LiveGameEvidenceBridge(store)
         self.teacher_adapter = teacher_adapter or AlphaBetaTeacherAdapter()
         self._board_factory = board_factory
+        self.last_opening_repair: OpeningRepairPlan | None = None
 
     @property
     def memory(self) -> Any:
         return self.runtime.memory
+
+    @staticmethod
+    def _row_get(row: Any, key: str, default: Any = None) -> Any:
+        try:
+            return row[key]
+        except Exception:
+            return getattr(row, key, default)
 
     def _load_saved_record(self, game_id: str) -> tuple[Any, int, str]:
         conn = self.memory.conn
@@ -123,7 +127,11 @@ class LiveStrengthCoordinator:
             )
             for row in rows
         ]
-        generation = int(game["generation"] if game["generation"] is not None else self.runtime.champion_info()["id"])
+        generation = int(
+            game["generation"]
+            if game["generation"] is not None
+            else self.runtime.champion_info()["id"]
+        )
         return SimpleNamespace(examples=examples, metadata=metadata), generation, str(game["source"])
 
     def capture_saved_games(
@@ -164,6 +172,42 @@ class LiveStrengthCoordinator:
         ).fetchone()
         return int(row["n"] if row is not None else 0)
 
+    def _current_champion_specialist_evidence(self, *, limit: int = 64) -> tuple[Any, ...]:
+        """Use specialist *gaps* only when they were measured vs the current throne.
+
+        Historical specialists remain available as replay/donors, but a Gen31 win
+        against an old Gen15 must not be misread as proof that today's Gen54 is weak
+        in the same opening.
+        """
+        if not hasattr(self.memory, "active_specialists"):
+            return ()
+        champion = int(self.runtime.champion_info()["id"])
+        selected: list[Any] = []
+        for row in self.memory.active_specialists(limit=limit):
+            raw = self._row_get(row, "evidence_json", None)
+            try:
+                evidence = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                evidence = {}
+            measured_against = evidence.get("champion_generation")
+            if measured_against is None:
+                continue
+            try:
+                if int(measured_against) != champion:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            selected.append(row)
+        return tuple(selected)
+
+    def opening_repair_plan(self) -> OpeningRepairPlan:
+        plan = self.opening_controller.plan(
+            specialists=self._current_champion_specialist_evidence(),
+            hard_bucket_stats=self.store.opening_bucket_stats(),
+        )
+        self.last_opening_repair = plan
+        return plan
+
     def build_recipe(
         self,
         *,
@@ -173,11 +217,14 @@ class LiveStrengthCoordinator:
         if targeted_examples <= 0:
             raise ValueError("targeted_examples must be positive")
         plan = self.controller.plan(self.store.round_history())
+        opening = self.opening_repair_plan()
         recipe = StrengthPipelinePlanner(self.store).build_recipe(
             plan,
             total_examples=targeted_examples,
             available_specialist_examples=self.specialist_example_count(),
             hard_position_bucket_cap=hard_position_bucket_cap,
+            opening_focus_buckets=opening.focus_openings,
+            opening_focus_fraction=opening.focus_fraction if opening.active else 0.0,
         )
         return plan, recipe
 
@@ -187,12 +234,7 @@ class LiveStrengthCoordinator:
         *,
         sampler: LiveReplayMixSampler | None = None,
     ) -> LiveReplayOverride:
-        """Return the temporary replay hook for the existing ContinualTrainer.
-
-        Production integration can now be only two lines around the existing
-        ``train_population`` call. The trainer, optimizer, branch focus and tensor
-        pipeline stay untouched; only the rows returned by MemoryStore are mixed.
-        """
+        """Temporarily mix opening/hard/specialist examples into the real trainer."""
         return LiveReplayOverride(self.memory, recipe, sampler=sampler)
 
     def _default_board_factory(self) -> Callable[[str], Any]:
@@ -261,7 +303,10 @@ class LiveStrengthCoordinator:
                     "opening_name": opening,
                     "opening_family": "strength_teacher",
                     "teacher_search_multiplier": rows[0][0].search_multiplier,
-                    "source_generations": sorted({r.source_generation for r, _ in rows if r.source_generation is not None}),
+                    "source_generations": sorted(
+                        {r.source_generation for r, _ in rows if r.source_generation is not None}
+                    ),
+                    "opening_repair": opening in set(recipe.opening_focus_buckets),
                 },
             )
             game_ids.append(str(gid))
@@ -288,19 +333,17 @@ class LiveStrengthCoordinator:
         generation: int | None = None,
         searcher: Any | None = None,
     ) -> LiveStrengthRoundReport:
-        """Prepare one live Strength Lab stage before population training.
-
-        ``persist_teacher`` defaults to False intentionally. The R&D branch can
-        mine/plan against a copied database without writing any new replay rows;
-        the production overlay must opt in only after the Mac dry-run gate.
-        """
+        """Prepare one live Strength Lab stage before population training."""
         captured = self.capture_saved_games(
             game_ids,
             round_index=round_index,
             observed_at=observed_at,
         )
         plan, recipe = self.build_recipe(targeted_examples=targeted_examples)
-        generation = int(generation if generation is not None else self.runtime.champion_info()["id"])
+        opening_repair = self.last_opening_repair
+        generation = int(
+            generation if generation is not None else self.runtime.champion_info()["id"]
+        )
         if persist_teacher:
             teacher_examples, teacher_game_ids = self.execute_teacher_requests(
                 recipe,
@@ -318,4 +361,5 @@ class LiveStrengthCoordinator:
             captured_positions=captured,
             teacher_examples=teacher_examples,
             teacher_game_ids=teacher_game_ids,
+            opening_repair=opening_repair,
         )
