@@ -72,6 +72,7 @@ from .mac_preflight import (
     run_spawn_probe,
     validate_copied_state,
 )
+from .opening_lab import OpeningBucketSignal, OpeningRepairPlan, OpeningWeaknessController
 from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
 from .opentree_policy import (
     CurriculumMix,
@@ -205,6 +206,9 @@ __all__ = [
     "load_snapshot_manifest",
     "run_spawn_probe",
     "validate_copied_state",
+    "OpeningBucketSignal",
+    "OpeningRepairPlan",
+    "OpeningWeaknessController",
     "GuardDecision",
     "OpenTreeStrengthGuard",
     "TrialEvidence",
