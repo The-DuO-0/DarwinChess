@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 from typing import Any
 
 from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
@@ -197,9 +196,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         observations.append(observation)
         delta = observation.score_delta_cp
+        delta_text = "?" if delta is None else f"{delta:.0f}cp"
         print(
             f"  ply {ply:>2}: {baseline_move:<6} -> {deeper_move:<6} "
-            f"delta={'?' if delta is None else f'{delta:.0f}cp':<6} {observation.status()}"
+            f"delta={delta_text:<6} {observation.status()}"
         )
 
         try:
