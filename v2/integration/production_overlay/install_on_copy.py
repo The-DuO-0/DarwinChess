@@ -18,6 +18,8 @@ class OverlayPlan:
     target_package: Path
     pyproject: Path
     cli: Path
+    source_search: Path
+    target_search: Path
     source_parallel_selfplay: Path
     target_parallel_selfplay: Path
     source_studio_backend: Path
@@ -37,6 +39,8 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
     source = v2_root / "dogmatist_v2"
     pyproject = target / "pyproject.toml"
     cli = target / "darwinchess" / "cli.py"
+    target_search = target / "darwinchess" / "search.py"
+    source_search = overlay_root / "darwinchess" / "search.py"
     target_parallel_selfplay = target / "darwinchess" / "parallel_selfplay.py"
     source_parallel_selfplay = overlay_root / "darwinchess" / "parallel_selfplay.py"
     target_backend = target / "studio" / "backend.py"
@@ -48,6 +52,8 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         source,
         pyproject,
         cli,
+        target_search,
+        source_search,
         target_parallel_selfplay,
         source_parallel_selfplay,
         target_backend,
@@ -67,6 +73,8 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         target / "dogmatist_v2",
         pyproject,
         cli,
+        source_search,
+        target_search,
         source_parallel_selfplay,
         target_parallel_selfplay,
         source_backend,
@@ -113,6 +121,7 @@ def apply_overlay(plan: OverlayPlan) -> None:
     for path in (
         plan.pyproject,
         plan.cli,
+        plan.target_search,
         plan.target_parallel_selfplay,
         plan.target_studio_backend,
         plan.target_evolution_page,
@@ -131,6 +140,7 @@ def apply_overlay(plan: OverlayPlan) -> None:
     )
     plan.pyproject.write_text(pyproject_text, encoding="utf-8")
     plan.cli.write_text(cli_text, encoding="utf-8")
+    shutil.copy2(plan.source_search, plan.target_search)
     shutil.copy2(plan.source_parallel_selfplay, plan.target_parallel_selfplay)
     shutil.copy2(plan.source_studio_backend, plan.target_studio_backend)
     shutil.copy2(plan.source_evolution_page, plan.target_evolution_page)
@@ -143,11 +153,13 @@ def describe(plan: OverlayPlan) -> str:
         f"  copy package: {plan.source_package} -> {plan.target_package}",
         f"  patch:        {plan.pyproject}",
         f"  patch:        {plan.cli}",
+        f"  search-r2:    {plan.target_search} (candidate disabled unless config enables it)",
         f"  worker guard: {plan.target_parallel_selfplay}",
         f"  replace UI:   {plan.target_studio_backend}",
         f"  replace UI:   {plan.target_evolution_page}",
         "  state data:   NOT touched by this installer",
         "  teacher:      defaults OFF until copied-state validation passes",
+        "  opening book: NOT injected; search-r2 only spends one extra ply when enabled",
         "  game timing:  run budget never kills a live game; watchdog only catches obvious stalls/emergencies",
         "  reference:    frozen checkpoint meter defaults ON, 2 colour-pairs per completed round",
         "  SIGINT:       parent owns safe drain; child self-play/League workers ignore first Ctrl-C",
