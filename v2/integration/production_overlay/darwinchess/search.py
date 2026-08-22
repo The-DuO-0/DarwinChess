@@ -48,7 +48,7 @@ class SearchResult:
 class TTEntry:
     depth: int
     score: float
-    flag: str  # exact/lower/upper
+    flag: str
     move: chess.Move | None
 
 
@@ -68,14 +68,15 @@ class AlphaBetaSearcher:
 
         rcfg = config.get("search", {}).get("opening_stabilization", {}) or {}
         self.opening_stabilization_enabled = bool(rcfg.get("enabled", False))
-        self.opening_revision_id = str(rcfg.get("revision_id", "search-r2-opening-stabilization"))
+        self.opening_revision_id = str(rcfg.get("revision_id", "search-r2b-opening-confidence"))
         self.opening_policy = OpeningSearchR2Policy(
             opening_plies=int(rcfg.get("opening_plies", 8)),
-            always_verify_plies=int(rcfg.get("always_verify_plies", 4)),
+            always_verify_plies=int(rcfg.get("always_verify_plies", 0)),
             extra_depth=int(rcfg.get("extra_depth", 1)),
-            candidate_margin_cp=float(rcfg.get("candidate_margin_cp", 25.0)),
+            candidate_margin_cp=float(rcfg.get("candidate_margin_cp", 18.0)),
             iteration_swing_cp=float(rcfg.get("iteration_swing_cp", 60.0)),
-            max_extra_searches=int(rcfg.get("max_extra_searches", 6)),
+            move_flip_min_swing_cp=float(rcfg.get("move_flip_min_swing_cp", 45.0)),
+            max_extra_searches=int(rcfg.get("max_extra_searches", 3)),
         )
         self.opening_session = OpeningSearchR2Session(self.opening_policy)
 
