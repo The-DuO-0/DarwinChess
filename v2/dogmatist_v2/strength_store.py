@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 from .strength_lab import EngineGateDecision, EngineTrialEvidence, RoundStrengthEvidence, StrengthMode
 
@@ -233,9 +234,15 @@ class StrengthStore:
         limit: int,
         *,
         per_bucket_cap: int = 8,
+        opening_buckets: Iterable[str] | None = None,
     ) -> tuple[HardPositionEvidence, ...]:
         if limit <= 0 or per_bucket_cap <= 0:
             return ()
+        allowed = None
+        if opening_buckets is not None:
+            allowed = {str(bucket) for bucket in opening_buckets if str(bucket)}
+            if not allowed:
+                return ()
         rows = self._conn.execute(
             """
             SELECT * FROM hard_positions
@@ -249,6 +256,8 @@ class StrengthStore:
         bucket_counts: dict[str, int] = {}
         for row in rows:
             bucket = row["opening_bucket"]
+            if allowed is not None and bucket not in allowed:
+                continue
             if bucket_counts.get(bucket, 0) >= per_bucket_cap:
                 continue
             selected.append(
@@ -267,6 +276,38 @@ class StrengthStore:
             if len(selected) >= limit:
                 break
         return tuple(selected)
+
+    def opening_bucket_stats(self, limit: int = 64) -> tuple[dict[str, object], ...]:
+        """Return compact persistent pressure for named or frontier openings."""
+        if limit <= 0:
+            return ()
+        rows = self._conn.execute(
+            """
+            SELECT
+                opening_bucket,
+                COUNT(*) AS hard_positions,
+                SUM(times_seen) AS hard_times_seen,
+                AVG(severity * 0.50 + value_error * 0.35 + uncertainty * 0.15) AS mean_priority,
+                MAX(severity * 0.50 + value_error * 0.35 + uncertainty * 0.15) AS max_priority,
+                MAX(last_seen_round) AS last_seen_round
+            FROM hard_positions
+            GROUP BY opening_bucket
+            ORDER BY max_priority DESC, hard_times_seen DESC, last_seen_round DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return tuple(
+            {
+                "opening_bucket": str(row["opening_bucket"]),
+                "hard_positions": int(row["hard_positions"] or 0),
+                "hard_times_seen": int(row["hard_times_seen"] or 0),
+                "mean_priority": float(row["mean_priority"] or 0.0),
+                "max_priority": float(row["max_priority"] or 0.0),
+                "last_seen_round": int(row["last_seen_round"] or 0),
+            }
+            for row in rows
+        )
 
     def hard_position_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM hard_positions").fetchone()
