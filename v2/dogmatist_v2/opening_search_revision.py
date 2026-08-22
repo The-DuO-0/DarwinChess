@@ -59,25 +59,25 @@ class OpeningDeepeningDecision:
 
 @dataclass(frozen=True)
 class OpeningSearchR2Policy:
-    """Evidence-gated opening-only +1-ply stabilization candidate.
+    """Confidence-gated opening-only +1-ply stabilization candidate.
 
-    The policy is intentionally conservative about compute. It can only fire
-    during the first ``opening_plies`` half-moves and can deepen at most
-    ``max_extra_searches`` times per game. The first few plies are always
-    verified because the real Gen54 probe showed pathological root instability;
-    later opening plies are verified only when the shallow search already looks
-    uncertain.
+    The first Gen54 implementation (r2a) verified too many early plies and cost
+    ~1.65x wall time in the first real Mac smoke test.  r2b therefore removes
+    unconditional early verification: it only spends the extra ply when the
+    already-computed shallow result looks uncertain.
 
-    This is an engine-revision *candidate*, not a production default. It must
-    still pass frozen-weight A/B strength and compute-cost gates before adoption.
+    No opening names, book moves, or Stockfish knowledge are used here.  The
+    shallow search must provide its own evidence that another ply is worth the
+    compute.
     """
 
     opening_plies: int = 8
-    always_verify_plies: int = 4
+    always_verify_plies: int = 0
     extra_depth: int = 1
-    candidate_margin_cp: float = 25.0
+    candidate_margin_cp: float = 18.0
     iteration_swing_cp: float = 60.0
-    max_extra_searches: int = 6
+    move_flip_min_swing_cp: float = 45.0
+    max_extra_searches: int = 3
 
     def __post_init__(self) -> None:
         if self.opening_plies <= 0:
@@ -86,7 +86,11 @@ class OpeningSearchR2Policy:
             raise ValueError("always_verify_plies must be within opening_plies")
         if self.extra_depth <= 0:
             raise ValueError("extra_depth must be positive")
-        if self.candidate_margin_cp < 0 or self.iteration_swing_cp < 0:
+        if (
+            self.candidate_margin_cp < 0
+            or self.iteration_swing_cp < 0
+            or self.move_flip_min_swing_cp < 0
+        ):
             raise ValueError("thresholds must be non-negative")
         if self.max_extra_searches < 0:
             raise ValueError("max_extra_searches must be non-negative")
@@ -107,13 +111,22 @@ class OpeningSearchR2Policy:
         if extra_searches_used >= self.max_extra_searches:
             return OpeningDeepeningDecision(False, target, "per-game extra-search budget exhausted")
         if evidence.ply <= self.always_verify_plies:
-            return OpeningDeepeningDecision(True, target, "root opening verification")
-        if evidence.iteration_move_flip:
-            return OpeningDeepeningDecision(True, target, "iterative-deepening move flip")
+            return OpeningDeepeningDecision(True, target, "configured root opening verification")
+
         swing = evidence.iteration_score_swing_cp
+        margin = evidence.candidate_margin_cp
+
+        # A naked depth-to-depth move flip can be harmless at depth 1 -> 2 and
+        # was firing too often in r2a.  Require a meaningful score swing before
+        # the flip itself justifies another ply.
+        if (
+            evidence.iteration_move_flip
+            and swing is not None
+            and swing >= self.move_flip_min_swing_cp
+        ):
+            return OpeningDeepeningDecision(True, target, "move flip with meaningful score swing")
         if swing is not None and swing >= self.iteration_swing_cp:
             return OpeningDeepeningDecision(True, target, "large iterative score swing")
-        margin = evidence.candidate_margin_cp
         if margin is not None and margin <= self.candidate_margin_cp:
             return OpeningDeepeningDecision(True, target, "shallow candidate margin is small")
         return OpeningDeepeningDecision(False, target, "shallow opening search looks stable")
@@ -178,7 +191,7 @@ class OpeningSearchRevisionPlan:
         cls,
         report: OpeningSearchStabilityReport,
         *,
-        revision_id: str = "search-r2-opening-stabilization",
+        revision_id: str = "search-r2b-opening-confidence",
         policy: OpeningSearchR2Policy | None = None,
     ) -> "OpeningSearchRevisionPlan":
         chosen = policy or OpeningSearchR2Policy()
@@ -215,6 +228,7 @@ class OpeningSearchRevisionPlan:
                 "extra_depth": self.policy.extra_depth,
                 "candidate_margin_cp": self.policy.candidate_margin_cp,
                 "iteration_swing_cp": self.policy.iteration_swing_cp,
+                "move_flip_min_swing_cp": self.policy.move_flip_min_swing_cp,
                 "max_extra_searches": self.policy.max_extra_searches,
                 "book_moves_injected": False,
             },
