@@ -164,7 +164,6 @@ def test_overlay_builds_recipe_and_writes_teacher_into_existing_replay_path(tmp_
     memory = FakeMemory()
     runtime = FakeRuntime(memory)
     with StrengthStore(tmp_path / "strength.sqlite3") as store:
-        # Seed enough distinct hard positions so the planner has teacher work.
         for index in range(30):
             store.upsert_hard_position(
                 HardPositionEvidence(
@@ -231,7 +230,6 @@ def test_coordinator_can_wrap_existing_trainer_replay_without_replacing_trainer(
             recipe,
             sampler=LiveReplayMixSampler(rng=random.Random(2)),
         ):
-            # This is the exact shape ContinualTrainer uses in production.
             rows = memory.replay_sample(
                 6,
                 0.35,
@@ -241,3 +239,38 @@ def test_coordinator_can_wrap_existing_trainer_replay_without_replacing_trainer(
             )
             assert rows
         assert memory.replay_sample.__func__ is original
+
+
+class SpecialistMemory(FakeMemory):
+    def active_specialists(self, limit=64):
+        return [
+            {
+                "generation": 31,
+                "opening_name": "Queen's Gambit",
+                "score": 0.90,
+                "games": 8,
+                "evidence_json": json.dumps({"champion_generation": 15}),
+            },
+            {
+                "generation": 71,
+                "opening_name": "Ruy Lopez",
+                "score": 0.75,
+                "games": 6,
+                "evidence_json": json.dumps({"champion_generation": 54}),
+            },
+        ]
+
+
+class Current54Runtime(FakeRuntime):
+    def champion_info(self):
+        return {"id": 54}
+
+
+def test_opening_repair_ignores_specialists_measured_against_old_champions(tmp_path):
+    memory = SpecialistMemory()
+    with StrengthStore(tmp_path / "strength.sqlite3") as store:
+        coordinator = LiveStrengthCoordinator(Current54Runtime(memory), store)
+        plan = coordinator.opening_repair_plan()
+        assert plan.active
+        assert plan.focus_openings == ("Ruy Lopez",)
+        assert "Queen's Gambit" not in plan.focus_openings
