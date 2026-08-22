@@ -14,6 +14,7 @@ from dogmatist_v2.opening_search_revision import (
     OpeningSearchR2Session,
     absolute_game_ply,
     candidate_scores,
+    select_verification_candidates,
 )
 
 from .evaluator import HybridEvaluator, PIECE_VALUES
@@ -42,6 +43,7 @@ class SearchResult:
     opening_stabilized: bool = False
     opening_stabilization_reason: str | None = None
     opening_extra_nodes: int = 0
+    opening_verified_moves: int = 0
 
 
 @dataclass
@@ -68,7 +70,7 @@ class AlphaBetaSearcher:
 
         rcfg = config.get("search", {}).get("opening_stabilization", {}) or {}
         self.opening_stabilization_enabled = bool(rcfg.get("enabled", False))
-        self.opening_revision_id = str(rcfg.get("revision_id", "search-r2b-opening-confidence"))
+        self.opening_revision_id = str(rcfg.get("revision_id", "search-r2c-selective-root"))
         self.opening_policy = OpeningSearchR2Policy(
             opening_plies=int(rcfg.get("opening_plies", 8)),
             always_verify_plies=int(rcfg.get("always_verify_plies", 0)),
@@ -79,6 +81,9 @@ class AlphaBetaSearcher:
             max_extra_searches=int(rcfg.get("max_extra_searches", 3)),
         )
         self.opening_session = OpeningSearchR2Session(self.opening_policy)
+        self.opening_verify_min_candidates = int(rcfg.get("verification_min_candidates", 4))
+        self.opening_verify_max_candidates = int(rcfg.get("verification_max_candidates", 8))
+        self.opening_verify_score_window_cp = float(rcfg.get("verification_score_window_cp", 90.0))
 
     def _key(self, board: chess.Board) -> int:
         return chess.polyglot.zobrist_hash(board)
@@ -218,6 +223,20 @@ class AlphaBetaSearcher:
         candidates.sort(key=lambda c: c.score_cp, reverse=True)
         return (candidates[0] if candidates else None), candidates[:top_n]
 
+    def _root_subset(self, board: chess.Board, depth: int, moves: list[chess.Move], top_n: int) -> tuple[Candidate | None, list[Candidate]]:
+        candidates: list[Candidate] = []
+        for move in moves:
+            self._check_time()
+            if move not in board.legal_moves:
+                continue
+            board.push(move)
+            score, child_pv = self._negamax(board, depth - 1, -INF, INF, 1)
+            score = -score
+            board.pop()
+            candidates.append(Candidate(move=move, score_cp=score, pv=[move] + child_pv))
+        candidates.sort(key=lambda c: c.score_cp, reverse=True)
+        return (candidates[0] if candidates else None), candidates[:top_n]
+
     def _opening_revision_decision(
         self,
         board: chess.Board,
@@ -242,11 +261,39 @@ class AlphaBetaSearcher:
         )
         return self.opening_session.decide(evidence)
 
+    def _verification_moves(
+        self,
+        board: chess.Board,
+        candidates: list[Candidate],
+        previous_best: Candidate | None,
+    ) -> list[chess.Move]:
+        selected = select_verification_candidates(
+            candidate_scores((c.move.uci(), c.score_cp) for c in candidates),
+            previous_iteration_move=previous_best.move.uci() if previous_best is not None else None,
+            min_candidates=self.opening_verify_min_candidates,
+            max_candidates=self.opening_verify_max_candidates,
+            score_window_cp=self.opening_verify_score_window_cp,
+        )
+        legal = set(board.legal_moves)
+        moves: list[chess.Move] = []
+        for uci in selected:
+            try:
+                move = chess.Move.from_uci(uci)
+            except ValueError:
+                continue
+            if move in legal and move not in moves:
+                moves.append(move)
+        return moves
+
     def search(self, board: chess.Board, depth: int | None = None, *, time_limit_s: float | None = None, top_n: int = 5) -> SearchResult:
         start = monotonic()
         self.nodes = 0
         self.deadline = None if time_limit_s is None else start + max(0.01, time_limit_s)
         max_depth = int(depth or self.config["search"].get("depth", 2))
+        internal_top_n = max(
+            int(top_n),
+            self.opening_verify_max_candidates if self.opening_stabilization_enabled else int(top_n),
+        )
         best: Candidate | None = None
         best_candidates: list[Candidate] = []
         completed_depth = 0
@@ -258,7 +305,7 @@ class AlphaBetaSearcher:
 
         for d in range(1, max_depth + 1):
             try:
-                root_best, candidates = self._root(board, d, top_n)
+                root_best, candidates = self._root(board, d, internal_top_n)
             except SearchTimeout:
                 break
             if root_best is not None:
@@ -270,6 +317,7 @@ class AlphaBetaSearcher:
         opening_stabilized = False
         stabilization_reason: str | None = None
         opening_extra_nodes = 0
+        opening_verified_moves = 0
         revision_id = "search-r1"
 
         if (
@@ -286,13 +334,20 @@ class AlphaBetaSearcher:
             )
             stabilization_reason = decision.reason
             if decision.deepen:
+                verification_moves = self._verification_moves(board, best_candidates, previous_iteration_best)
+                opening_verified_moves = len(verification_moves)
                 nodes_before = self.nodes
                 try:
-                    deeper_best, deeper_candidates = self._root(board, decision.target_depth, top_n)
+                    deeper_best, deeper_candidates = self._root_subset(
+                        board,
+                        decision.target_depth,
+                        verification_moves,
+                        internal_top_n,
+                    )
                 except SearchTimeout:
                     deeper_best = None
                     deeper_candidates = []
-                    stabilization_reason = decision.reason + "; verification timed out"
+                    stabilization_reason = decision.reason + "; selective verification timed out"
                 opening_extra_nodes = max(0, self.nodes - nodes_before)
                 if deeper_best is not None:
                     best = deeper_best
@@ -310,10 +365,11 @@ class AlphaBetaSearcher:
             depth=completed_depth,
             nodes=self.nodes,
             pv=best.pv,
-            candidates=best_candidates,
+            candidates=best_candidates[:top_n],
             elapsed_s=monotonic() - start,
             engine_revision=revision_id,
             opening_stabilized=opening_stabilized,
             opening_stabilization_reason=stabilization_reason,
             opening_extra_nodes=opening_extra_nodes,
+            opening_verified_moves=opening_verified_moves,
         )
