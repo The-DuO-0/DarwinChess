@@ -89,11 +89,7 @@ class HardPositionEvidence:
 
 
 class StrengthStore:
-    """Persistent, model-free evidence store for continuous strength growth.
-
-    It deliberately stores only scalars/FEN strings and never loads checkpoints,
-    so the Strength Lab can grow for months without consuming meaningful RAM.
-    """
+    """Persistent, model-free evidence store for continuous strength growth."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -210,8 +206,6 @@ class StrengthStore:
                 timestamp,
             ),
         )
-        # Bound every opening bucket. Keep repeated/high-value failures, not a
-        # limitless log of nearly identical low-value positions.
         self._conn.execute(
             """
             DELETE FROM hard_positions
@@ -278,7 +272,12 @@ class StrengthStore:
         return tuple(selected)
 
     def opening_bucket_stats(self, limit: int = 64) -> tuple[dict[str, object], ...]:
-        """Return compact persistent pressure for named or frontier openings."""
+        """Aggregate only the dedicated early-opening evidence lane.
+
+        A middlegame failure from a game labelled 'Queen's Gambit' must not by
+        itself prove that the opening was bad. Only rows captured by the explicit
+        opening lane (`*_opening`) feed this weakness meter.
+        """
         if limit <= 0:
             return ()
         rows = self._conn.execute(
@@ -291,6 +290,7 @@ class StrengthStore:
                 MAX(severity * 0.50 + value_error * 0.35 + uncertainty * 0.15) AS max_priority,
                 MAX(last_seen_round) AS last_seen_round
             FROM hard_positions
+            WHERE source_kind LIKE '%_opening'
             GROUP BY opening_bucket
             ORDER BY max_priority DESC, hard_times_seen DESC, last_seen_round DESC
             LIMIT ?
@@ -388,9 +388,7 @@ class StrengthStore:
                 f"({latest_trial['reason']})"
             )
 
-        self._conn.execute(
-            "UPDATE engine_revisions SET status='retired' WHERE status='active'"
-        )
+        self._conn.execute("UPDATE engine_revisions SET status='retired' WHERE status='active'")
         self._conn.execute(
             "UPDATE engine_revisions SET status='active', adopted_at=? WHERE revision_id=?",
             (_iso(adopted_at), revision_id),
