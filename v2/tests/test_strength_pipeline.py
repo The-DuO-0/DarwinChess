@@ -56,6 +56,57 @@ def test_teacher_requests_use_deeper_search_multiplier(tmp_path):
         assert recipe.effective_total == 40
 
 
+def test_opening_focus_reserves_targeted_work_but_keeps_other_openings(tmp_path):
+    with StrengthStore(tmp_path / "strength.sqlite3") as store:
+        for index in range(24):
+            store.upsert_hard_position(
+                HardPositionEvidence(
+                    f"qg-{index} w - - 0 1",
+                    "Queen's Gambit",
+                    54,
+                    "selfplay_opening",
+                    0.9 - index * 0.01,
+                    0.2,
+                    0.6,
+                    18,
+                ),
+                observed_at=NOW,
+                max_per_bucket=64,
+            )
+            store.upsert_hard_position(
+                HardPositionEvidence(
+                    f"reti-{index} w - - 0 1",
+                    "Reti",
+                    54,
+                    "selfplay",
+                    0.6 - index * 0.01,
+                    0.2,
+                    0.5,
+                    18,
+                ),
+                observed_at=NOW,
+                max_per_bucket=64,
+            )
+        plan = StrengthLabController().plan([])
+        recipe = StrengthPipelinePlanner(store).build_recipe(
+            plan,
+            total_examples=100,
+            available_specialist_examples=100,
+            hard_position_bucket_cap=32,
+            opening_focus_buckets=("Queen's Gambit",),
+            opening_focus_fraction=0.60,
+        )
+        assert recipe.effective_total == 100
+        assert recipe.opening_focus_buckets == ("Queen's Gambit",)
+        assert recipe.focused_hard_positions == 12
+        assert recipe.focused_teacher_requests == 6
+        assert any(row.opening_bucket == "Reti" for row in recipe.hard_positions)
+        assert any(req.opening_bucket == "Reti" for req in recipe.teacher_requests)
+        payload = recipe.ui_payload()["opening_focus"]
+        assert payload["book_moves_injected"] is False
+        assert payload["novel_openings_allowed"] is True
+
+
 def test_engine_ab_trial_uses_same_fen_checkpoint_and_swaps_colours():
     trial = EngineABTrialPlan(
         baseline_revision_id="search-r1",
