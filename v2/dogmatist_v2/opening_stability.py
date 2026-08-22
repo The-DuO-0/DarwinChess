@@ -80,9 +80,13 @@ class OpeningSearchStabilityReport:
     def early_search_unstable(self) -> bool:
         if not self.observations:
             return False
-        # One isolated move flip can be normal at shallow search. Repeated flips or
-        # one large early score re-evaluation are the useful horizon signal.
-        return self.horizon_sensitive >= 2 or self.flip_rate >= 0.30
+        # One isolated move flip can be normal at shallow search. Require either
+        # repeated high-signal horizon sensitivity or a meaningful multi-position
+        # sample before a raw flip rate can label the opening search unstable.
+        enough_positions_for_rate = len(self.observations) >= 4
+        return self.horizon_sensitive >= 2 or (
+            enough_positions_for_rate and self.flip_rate >= 0.30
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
