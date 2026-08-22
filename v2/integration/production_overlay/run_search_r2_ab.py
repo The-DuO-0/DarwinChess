@@ -27,6 +27,13 @@ class SearchMeter:
             self.opening_stabilized += 1
         self.opening_extra_nodes += int(getattr(result, "opening_extra_nodes", 0) or 0)
 
+    def merge(self, other: "SearchMeter") -> None:
+        self.calls += other.calls
+        self.nodes += other.nodes
+        self.elapsed_s += other.elapsed_s
+        self.opening_stabilized += other.opening_stabilized
+        self.opening_extra_nodes += other.opening_extra_nodes
+
     def as_dict(self) -> dict[str, object]:
         return {
             "calls": self.calls,
@@ -107,10 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     manifest = load_snapshot_manifest(snapshot)
-    champion = int(manifest.champion_generation) if manifest.champion_generation is not None else None
-    if champion != int(args.generation):
+    snapshot_champion = int(manifest.champion_generation) if manifest.champion_generation is not None else None
+    if snapshot_champion != int(args.generation):
         raise RuntimeError(
-            f"search-r2 A/B refused: snapshot champion is Gen{champion}, requested Gen{args.generation}"
+            f"search-r2 A/B refused: snapshot manifest champion is Gen{snapshot_champion}, "
+            f"requested Gen{args.generation}"
         )
 
     if not (source / "darwinchess" / "search.py").is_file():
@@ -128,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
     from darwinchess.selfplay import play_game
 
     with DarwinRuntime(mode=args.mode, apply_nice=False) as rt:
+        live_copy_champion = int(rt.champion_info()["id"])
+        if live_copy_champion != int(args.generation):
+            raise RuntimeError(
+                f"search-r2 A/B refused: copied DB champion is Gen{live_copy_champion}, "
+                f"requested Gen{args.generation}. Rebuild a clean frozen snapshot first."
+            )
         model, payload = rt.load_champion(rt.search_device)
         genome = rt.genome_from_payload(payload)
         base_config = copy.deepcopy(rt.config)
@@ -159,8 +173,6 @@ def main(argv: list[str] | None = None) -> int:
     played = 0
     for pair_index, (start_board, opening_name) in enumerate(starts):
         for candidate_white in (True, False):
-            # Fresh searchers per game: equal TT conditions and a clean per-game
-            # search-r2 extra-depth budget.
             b_game = SearchMeter()
             c_game = SearchMeter()
             baseline = make_searcher(False, b_game)
@@ -168,9 +180,11 @@ def main(argv: list[str] | None = None) -> int:
             if candidate_white:
                 white, black = candidate, baseline
                 white_name, black_name = "search-r2", "search-r1"
+                candidate_color = chess.WHITE
             else:
                 white, black = baseline, candidate
                 white_name, black_name = "search-r1", "search-r2"
+                candidate_color = chess.BLACK
 
             record = play_game(
                 white,
@@ -190,23 +204,15 @@ def main(argv: list[str] | None = None) -> int:
             if record.winner is None:
                 score = 0.5
                 draws += 1
-            elif (record.winner is chess.WHITE) == candidate_white:
+            elif record.winner == candidate_color:
                 score = 1.0
                 wins += 1
             else:
                 score = 0.0
                 losses += 1
 
-            baseline_meter.calls += b_game.calls
-            baseline_meter.nodes += b_game.nodes
-            baseline_meter.elapsed_s += b_game.elapsed_s
-            baseline_meter.opening_stabilized += b_game.opening_stabilized
-            baseline_meter.opening_extra_nodes += b_game.opening_extra_nodes
-            candidate_meter.calls += c_game.calls
-            candidate_meter.nodes += c_game.nodes
-            candidate_meter.elapsed_s += c_game.elapsed_s
-            candidate_meter.opening_stabilized += c_game.opening_stabilized
-            candidate_meter.opening_extra_nodes += c_game.opening_extra_nodes
+            baseline_meter.merge(b_game)
+            candidate_meter.merge(c_game)
 
             played += 1
             game_rows.append(
