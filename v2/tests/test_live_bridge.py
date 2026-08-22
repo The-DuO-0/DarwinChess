@@ -99,9 +99,39 @@ def test_opening_lane_captures_early_value_failure_but_not_exploration_regret(tm
         early = next(row for row in rows if row.ply_index == 3)
         assert early.evidence.opening_bucket == "Queen's Gambit"
         assert early.evidence.value_error > 0.8
+        # The early search actually liked this position. The eventual loss is a
+        # large calibration error, but must not be converted into "opening was
+        # already losing" severity.
+        assert early.evidence.severity == 0.0
         # c2c4 was a deliberate stochastic exploration choice; the 500cp move
         # gap must not be counted as model policy surprise in the opening lane.
         assert early.evidence.uncertainty == 0.0
+
+
+def test_eventual_loss_does_not_make_neutral_opening_position_max_severity(tmp_path):
+    record = FakeRecord(
+        examples=[
+            FakeExample(
+                f"neutral-loss-{i} w - - 0 1",
+                -1.0,
+                0.0,
+                0.0,
+                move_uci="d2d4",
+                played_move_uci="d2d4",
+            )
+            for i in range(4)
+        ],
+        metadata={"opening_name": "Reti"},
+    )
+    with StrengthStore(tmp_path / "strength.sqlite3") as store:
+        bridge = LiveGameEvidenceBridge(store)
+        rows = bridge.opening_candidates_from_record(record, generation=54, round_index=18)
+        assert rows
+        assert all(row.evidence.severity == 0.0 for row in rows)
+        # The result disagreement remains useful calibration evidence, so the
+        # position can still enter the opening lab without being falsely called
+        # an already-losing opening.
+        assert rows[0].evidence.value_error == 0.5
 
 
 def test_unknown_opening_gets_stable_frontier_bucket_instead_of_being_discarded(tmp_path):
