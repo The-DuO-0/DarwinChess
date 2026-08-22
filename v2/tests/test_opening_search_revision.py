@@ -1,7 +1,9 @@
 from dogmatist_v2.opening_search_revision import (
     OpeningSearchEvidence,
     OpeningSearchR2Policy,
+    OpeningSearchR2Session,
     OpeningSearchRevisionPlan,
+    absolute_game_ply,
     candidate_scores,
 )
 from dogmatist_v2.opening_stability import OpeningSearchObservation, build_stability_report
@@ -121,3 +123,26 @@ def test_policy_never_deepens_after_opening_or_after_budget_exhausted():
     exhausted = policy.decide(inside, extra_searches_used=3)
     assert exhausted.deepen is False
     assert "budget exhausted" in exhausted.reason
+
+
+def test_session_resets_budget_when_a_new_game_starts():
+    session = OpeningSearchR2Session(OpeningSearchR2Policy(max_extra_searches=2))
+    for ply in (1, 2):
+        decision = session.decide(OpeningSearchEvidence(ply=ply, base_depth=2, best_move="g1f3"))
+        assert decision.deepen is True
+    exhausted = session.decide(OpeningSearchEvidence(ply=3, base_depth=2, best_move="g1f3"))
+    assert exhausted.deepen is False
+
+    # A later call at a smaller/equal absolute ply means the searcher was reused
+    # for another game; the per-game compute allowance must reset.
+    again = session.decide(OpeningSearchEvidence(ply=1, base_depth=2, best_move="g1f3"))
+    assert again.deepen is True
+    assert session.extra_searches_used == 1
+    assert session.total_extra_searches == 3
+
+
+def test_absolute_game_ply_matches_fen_move_counters():
+    assert absolute_game_ply(fullmove_number=1, white_to_move=True) == 1
+    assert absolute_game_ply(fullmove_number=1, white_to_move=False) == 2
+    assert absolute_game_ply(fullmove_number=2, white_to_move=True) == 3
+    assert absolute_game_ply(fullmove_number=4, white_to_move=False) == 8
