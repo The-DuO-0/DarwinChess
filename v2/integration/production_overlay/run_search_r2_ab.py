@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
 
 
+CANDIDATE_REVISION = "search-r2b-opening-confidence"
+
+
 @dataclass
 class SearchMeter:
     calls: int = 0
@@ -70,22 +73,37 @@ def _candidate_config(base: dict, *, enabled: bool) -> dict:
     cfg = copy.deepcopy(base)
     cfg.setdefault("search", {})["opening_stabilization"] = {
         "enabled": bool(enabled),
-        "revision_id": "search-r2-opening-stabilization",
+        "revision_id": CANDIDATE_REVISION,
         "opening_plies": 8,
-        "always_verify_plies": 4,
+        "always_verify_plies": 0,
         "extra_depth": 1,
-        "candidate_margin_cp": 25.0,
+        "candidate_margin_cp": 18.0,
         "iteration_swing_cp": 60.0,
-        "max_extra_searches": 6,
+        "move_flip_min_swing_cp": 45.0,
+        "max_extra_searches": 3,
     }
     return cfg
+
+
+def _partial_verdict(*, games: int, score: float, time_ratio: float) -> tuple[str, str]:
+    # Mirrors the hard compute/strength edges of EngineRevisionGate without
+    # pretending that this smoke harness measured fixed-reference delta.
+    if time_ratio > 1.60:
+        return "REJECT_COST", "candidate exceeds the 1.60x hard compute ceiling"
+    if games < 12:
+        return "SMOKE_ONLY", "compute is acceptable so far; need >=12 games before strength gating"
+    if score < 0.48:
+        return "REJECT_STRENGTH", "paired A/B score is below the 0.48 rejection floor"
+    if score >= 0.55 and time_ratio <= 1.30:
+        return "READY_FOR_FIXED_REFERENCE_GATE", "A/B strength/cost look promising; fixed-reference delta still required"
+    return "DEFER", "evidence is not strong enough for adoption"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Paired frozen-weight A/B smoke/gate for search-r1 versus the candidate "
-            "search-r2 opening stabilization revision. No model training or DB writes."
+            "Paired frozen-weight A/B smoke/gate for search-r1 versus the confidence-gated "
+            "search-r2b opening stabilization revision. No model training or DB writes."
         )
     )
     parser.add_argument("source_copy")
@@ -117,14 +135,13 @@ def main(argv: list[str] | None = None) -> int:
     snapshot_champion = int(manifest.champion_generation) if manifest.champion_generation is not None else None
     if snapshot_champion != int(args.generation):
         raise RuntimeError(
-            f"search-r2 A/B refused: snapshot manifest champion is Gen{snapshot_champion}, "
+            f"search-r2b A/B refused: snapshot manifest champion is Gen{snapshot_champion}, "
             f"requested Gen{args.generation}"
         )
 
     if not (source / "darwinchess" / "search.py").is_file():
         raise FileNotFoundError(f"copied production search.py not found under {source}")
 
-    # Import the copied production package, not an unrelated installed build.
     sys.path.insert(0, str(source))
     _analysis_env(snapshot)
 
@@ -139,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         live_copy_champion = int(rt.champion_info()["id"])
         if live_copy_champion != int(args.generation):
             raise RuntimeError(
-                f"search-r2 A/B refused: copied DB champion is Gen{live_copy_champion}, "
+                f"search-r2b A/B refused: copied DB champion is Gen{live_copy_champion}, "
                 f"requested Gen{args.generation}. Rebuild a clean frozen snapshot first."
             )
         model, payload = rt.load_champion(rt.search_device)
@@ -166,8 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     game_rows: list[dict[str, object]] = []
 
     print(
-        f"[search-r2-ab] Frozen Gen{args.generation}; search-r1 depth={args.depth} vs "
-        f"search-r2 opening-only +1; pairs={args.pairs}; book moves OFF"
+        f"[search-r2b-ab] Frozen Gen{args.generation}; search-r1 depth={args.depth} vs "
+        f"search-r2b confidence-gated opening +1; pairs={args.pairs}; book moves OFF"
     )
 
     played = 0
@@ -179,11 +196,11 @@ def main(argv: list[str] | None = None) -> int:
             candidate = make_searcher(True, c_game)
             if candidate_white:
                 white, black = candidate, baseline
-                white_name, black_name = "search-r2", "search-r1"
+                white_name, black_name = "search-r2b", "search-r1"
                 candidate_color = chess.WHITE
             else:
                 white, black = baseline, candidate
-                white_name, black_name = "search-r1", "search-r2"
+                white_name, black_name = "search-r1", "search-r2b"
                 candidate_color = chess.BLACK
 
             record = play_game(
@@ -198,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_plies=int(args.max_plies),
                 starting_board=start_board,
                 opening_name=opening_name,
-                opening_family="search-r2-ab",
+                opening_family="search-r2b-ab",
             )
 
             if record.winner is None:
@@ -234,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(
                 f"  game {played:>2}/{args.pairs * 2}: {opening_name:<24} "
-                f"r2={'W' if candidate_white else 'B'} score={score:.1f} plies={record.plies} "
+                f"r2b={'W' if candidate_white else 'B'} score={score:.1f} plies={record.plies} "
                 f"stabilized={c_game.opening_stabilized}"
             )
 
@@ -242,11 +259,12 @@ def main(argv: list[str] | None = None) -> int:
     node_ratio = candidate_meter.nodes / max(1, baseline_meter.nodes)
     time_ratio = candidate_meter.elapsed_s / max(1e-9, baseline_meter.elapsed_s)
     enough_for_gate = played >= 12
+    verdict, verdict_reason = _partial_verdict(games=played, score=score, time_ratio=time_ratio)
 
     summary = {
         "generation": int(args.generation),
         "baseline_revision": "search-r1",
-        "candidate_revision": "search-r2-opening-stabilization",
+        "candidate_revision": CANDIDATE_REVISION,
         "pairs": int(args.pairs),
         "games": played,
         "wins": wins,
@@ -258,27 +276,29 @@ def main(argv: list[str] | None = None) -> int:
         "candidate_to_baseline_node_ratio": node_ratio,
         "candidate_to_baseline_time_ratio": time_ratio,
         "enough_games_for_engine_gate": enough_for_gate,
+        "partial_verdict": verdict,
+        "partial_verdict_reason": verdict_reason,
+        "fixed_reference_delta_measured": False,
         "book_moves_injected": False,
+        "policy": candidate_cfg["search"]["opening_stabilization"],
         "games_detail": game_rows,
     }
 
     report_dir = snapshot.parent / "dogmatist_v2_validation_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
-    out = report_dir / f"search_r2_ab_gen{int(args.generation)}_{int(args.pairs)}pairs.json"
+    out = report_dir / f"search_r2b_ab_gen{int(args.generation)}_{int(args.pairs)}pairs.json"
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("\nSEARCH-R2 FROZEN GEN A/B")
+    print("\nSEARCH-R2B FROZEN GEN A/B")
     print("=" * 40)
     print(f"score: {score:.3f}  W/D/L={wins}/{draws}/{losses}  games={played}")
-    print(f"node ratio r2/r1: {node_ratio:.3f}")
-    print(f"time ratio r2/r1: {time_ratio:.3f}")
-    print(f"r2 stabilized calls: {candidate_meter.opening_stabilized}")
-    print(f"r2 extra opening nodes: {candidate_meter.opening_extra_nodes}")
+    print(f"node ratio r2b/r1: {node_ratio:.3f}")
+    print(f"time ratio r2b/r1: {time_ratio:.3f}")
+    print(f"r2b stabilized calls: {candidate_meter.opening_stabilized}")
+    print(f"r2b extra opening nodes: {candidate_meter.opening_extra_nodes}")
     print("book moves: OFF")
-    print(
-        "gate status: "
-        + ("ENOUGH GAMES FOR ENGINE GATE" if enough_for_gate else "SMOKE ONLY; run >=6 pairs before adoption")
-    )
+    print(f"partial verdict: {verdict} - {verdict_reason}")
+    print("fixed-reference delta: NOT MEASURED in this smoke harness")
     print(f"report: {out}")
     return 0
 
