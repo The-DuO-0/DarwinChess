@@ -10,7 +10,28 @@ Answer a narrow question before live installation:
 
 The diagnostic never changes the live Champion. It runs one Evolution cycle against an isolated copied `.darwinchess` state, captures the early-opening evidence already produced by V2.2.9, and then reads the copied `strength_v2.sqlite3` in SQLite read-only mode.
 
-## Clean-copy rule
+## Fresh-snapshot rule
+
+Do **not** reuse the earlier validation world that already evolved from Gen54 to Gen62. Create a new snapshot from live state first. The snapshot manifest records the Champion generation, and `run_opening_diagnosis.py` refuses to start if the snapshot Champion does not equal the requested generation.
+
+For a Gen54 diagnosis, the dry preparation step is:
+
+```bash
+PYTHONPATH=v2 python v2/integration/production_overlay/prepare_mac_validation.py \
+  /Users/o-o/.darwinchess \
+  /Users/o-o/dogmatist-opening54-validation \
+  --spawn-probe
+```
+
+The destination home must be new or empty. The snapshot will be created automatically at:
+
+```text
+/Users/o-o/dogmatist-opening54-validation/.darwinchess
+```
+
+Inspect `snapshot.champion_generation` in the printed JSON. For this particular test it must be `54`. If live has already moved to another Champion, stop rather than silently diagnosing that model as Gen54.
+
+## Clean Strength-Lab rule
 
 `run_opening_diagnosis.py` resets only these files inside the copied snapshot by default:
 
@@ -45,22 +66,22 @@ The report contains:
 
 `pressure` is an internal training/repair signal. It is not Elo and is not an external-engine centipawn verdict.
 
-## Mac command
+## Diagnosis command
 
 From the R&D checkout after refreshing the `v2-dynasty-archive` branch and reinstalling the overlay into the copied source tree:
 
 ```bash
 PYTHONPATH=v2 python v2/integration/production_overlay/run_opening_diagnosis.py \
   /Users/o-o/DarwinChess-v2-test \
-  /Users/o-o/dogmatist-v2-validation/.darwinchess \
+  /Users/o-o/dogmatist-opening54-validation/.darwinchess \
   --generation 54 \
   --mode normal \
   --league-parallel 2
 ```
 
-That first command is a dry run only. It prints the preflight and the exact isolated paths.
+That first command is a dry run only. It prints the preflight, the snapshot Champion, and the exact isolated paths.
 
-After verifying the paths, execute the same command with:
+After verifying all of them, execute the same command with:
 
 ```bash
   --run
@@ -89,12 +110,15 @@ Novel exploration: ON
 
 ## Safety
 
+- Fresh snapshot is produced with SQLite backup while the live database is opened read-only.
+- Snapshot checkpoint paths are rewritten to copied files and isolation-checked.
+- The diagnosis runner refuses a snapshot whose Champion is not the requested generation.
 - Uses the existing copied-state preflight and postflight validator.
 - Teacher replay persistence remains forced OFF by copied-state validation.
 - League remains 2-way by default; 3 is opt-in.
 - Runtime budget still never kills a healthy game.
 - Gen54 checkpoint is never trained/overwritten in place by the diagnosis.
-- Live `~/.darwinchess` is not used by the run.
+- Live `~/.darwinchess` is not used by the chess run.
 
 ## Gate before live installation
 
