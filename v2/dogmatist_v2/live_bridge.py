@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
 from typing import Any, Callable, Iterable
 
@@ -42,12 +43,16 @@ def cp_to_value(score_cp: float, *, cp_scale: float = 650.0) -> float:
 
 
 class LiveGameEvidenceBridge:
-    """Convert the current dog_matist GameRecord into compact StrengthStore evidence.
+    """Convert production GameRecord data into compact StrengthStore evidence.
 
-    The production self-play code already stores FEN, final value target, played
-    search score and best-search score in every replay example.  That is enough
-    to mine useful hard positions without changing the live GameRecord schema.
+    Ordinary hard-position mining skips the stochastic opening exploration window.
+    A separate opening lane now observes early positions, but it deliberately does
+    *not* call a played-vs-best mismatch a mistake: production self-play may choose
+    a different legal move on purpose to explore. Early positions are retained only
+    when value error/repeated failure supplies independent evidence of weakness.
     """
+
+    _GENERIC_OPENING_LABELS = {"", "unknown", "initial position", "start", "starting position"}
 
     def __init__(
         self,
@@ -57,6 +62,9 @@ class LiveGameEvidenceBridge:
         skip_opening_plies: int = 6,
         max_positions_per_game: int = 12,
         minimum_priority: float = 0.24,
+        opening_max_plies: int = 12,
+        opening_positions_per_game: int = 6,
+        opening_minimum_priority: float = 0.16,
     ) -> None:
         if cp_scale <= 0:
             raise ValueError("cp_scale must be positive")
@@ -64,11 +72,84 @@ class LiveGameEvidenceBridge:
             raise ValueError("skip_opening_plies must be non-negative")
         if max_positions_per_game <= 0:
             raise ValueError("max_positions_per_game must be positive")
+        if opening_max_plies <= 0 or opening_positions_per_game <= 0:
+            raise ValueError("opening evidence limits must be positive")
         self.store = store
         self.cp_scale = cp_scale
         self.skip_opening_plies = skip_opening_plies
         self.max_positions_per_game = max_positions_per_game
         self.minimum_priority = minimum_priority
+        self.opening_max_plies = opening_max_plies
+        self.opening_positions_per_game = opening_positions_per_game
+        self.opening_minimum_priority = opening_minimum_priority
+
+    @staticmethod
+    def _move_text(example: Any, name: str) -> str | None:
+        raw = getattr(example, name, None)
+        if raw is None:
+            return None
+        text = raw.uci() if hasattr(raw, "uci") else str(raw)
+        return text if text else None
+
+    def opening_bucket_for_record(self, record: Any) -> str:
+        metadata = getattr(record, "metadata", {}) or {}
+        named = str(metadata.get("opening_name") or metadata.get("opening_family") or "").strip()
+        if named.lower() not in self._GENERIC_OPENING_LABELS:
+            return named
+
+        # Unknown/new openings remain first-class. Hash a short move trace instead
+        # of forcing it into an existing human opening name or injecting book moves.
+        trace: list[str] = []
+        for example in list(getattr(record, "examples", ()) or ())[:8]:
+            move = self._move_text(example, "played_move_uci") or self._move_text(example, "move_uci")
+            if move:
+                trace.append(move)
+            if len(trace) >= 6:
+                break
+        seed = " ".join(trace) or "unclassified"
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:10]
+        return f"frontier:{digest}"
+
+    def _evidence_from_example(
+        self,
+        example: Any,
+        *,
+        opening: str,
+        generation: int,
+        round_index: int,
+        source_kind: str,
+        suppress_exploration_regret: bool,
+    ) -> HardPositionEvidence | None:
+        search_score = getattr(example, "search_score_cp", None)
+        best_score = getattr(example, "best_score_cp", None)
+        if search_score is None:
+            return None
+        value_target = float(getattr(example, "value_target", 0.0))
+        predicted = cp_to_value(float(search_score), cp_scale=self.cp_scale)
+        value_error = min(1.0, abs(predicted - value_target) / 2.0)
+        severity = max(0.0, -value_target)
+
+        policy_surprise = 0.0
+        if best_score is not None:
+            played = self._move_text(example, "played_move_uci")
+            best_move = self._move_text(example, "move_uci")
+            deliberate_exploration = bool(played and best_move and played != best_move)
+            if not (suppress_exploration_regret and deliberate_exploration):
+                policy_surprise = min(
+                    1.0,
+                    max(0.0, float(best_score) - float(search_score)) / 300.0,
+                )
+
+        return HardPositionEvidence(
+            fen=str(getattr(example, "fen")),
+            opening_bucket=opening,
+            source_generation=generation,
+            source_kind=source_kind,
+            severity=severity,
+            uncertainty=policy_surprise,
+            value_error=value_error,
+            round_index=round_index,
+        )
 
     def candidates_from_record(
         self,
@@ -78,38 +159,50 @@ class LiveGameEvidenceBridge:
         round_index: int,
         source_kind: str = "selfplay",
     ) -> tuple[CapturedHardPosition, ...]:
-        metadata = getattr(record, "metadata", {}) or {}
-        opening = str(metadata.get("opening_name") or metadata.get("opening_family") or "unknown")
+        opening = self.opening_bucket_for_record(record)
         rows: list[CapturedHardPosition] = []
         examples = list(getattr(record, "examples", ()) or ())
         for ply_index, example in enumerate(examples):
             if ply_index < self.skip_opening_plies:
                 continue
-            search_score = getattr(example, "search_score_cp", None)
-            best_score = getattr(example, "best_score_cp", None)
-            if search_score is None:
-                continue
-            value_target = float(getattr(example, "value_target", 0.0))
-            predicted = cp_to_value(float(search_score), cp_scale=self.cp_scale)
-            value_error = min(1.0, abs(predicted - value_target) / 2.0)
-            severity = max(0.0, -value_target)
-            if best_score is None:
-                policy_surprise = 0.0
-            else:
-                policy_surprise = min(1.0, max(0.0, float(best_score) - float(search_score)) / 300.0)
-            evidence = HardPositionEvidence(
-                fen=str(getattr(example, "fen")),
-                opening_bucket=opening,
-                source_generation=generation,
-                source_kind=source_kind,
-                severity=severity,
-                uncertainty=policy_surprise,
-                value_error=value_error,
+            evidence = self._evidence_from_example(
+                example,
+                opening=opening,
+                generation=generation,
                 round_index=round_index,
+                source_kind=source_kind,
+                suppress_exploration_regret=False,
             )
-            rows.append(CapturedHardPosition(evidence, evidence.priority, ply_index))
+            if evidence is not None:
+                rows.append(CapturedHardPosition(evidence, evidence.priority, ply_index))
         rows.sort(key=lambda item: (item.priority, -item.ply_index), reverse=True)
         return tuple(row for row in rows if row.priority >= self.minimum_priority)[: self.max_positions_per_game]
+
+    def opening_candidates_from_record(
+        self,
+        record: Any,
+        *,
+        generation: int,
+        round_index: int,
+        source_kind: str = "selfplay",
+    ) -> tuple[CapturedHardPosition, ...]:
+        """Observe early positions without treating stochastic exploration as error."""
+        opening = self.opening_bucket_for_record(record)
+        rows: list[CapturedHardPosition] = []
+        examples = list(getattr(record, "examples", ()) or ())
+        for ply_index, example in enumerate(examples[: self.opening_max_plies]):
+            evidence = self._evidence_from_example(
+                example,
+                opening=opening,
+                generation=generation,
+                round_index=round_index,
+                source_kind=f"{source_kind}_opening",
+                suppress_exploration_regret=True,
+            )
+            if evidence is not None:
+                rows.append(CapturedHardPosition(evidence, evidence.priority, ply_index))
+        rows.sort(key=lambda item: (item.priority, -item.ply_index), reverse=True)
+        return tuple(row for row in rows if row.priority >= self.opening_minimum_priority)[: self.opening_positions_per_game]
 
     def persist_record(
         self,
@@ -121,12 +214,29 @@ class LiveGameEvidenceBridge:
         source_kind: str = "selfplay",
         max_per_bucket: int = 128,
     ) -> int:
-        rows = self.candidates_from_record(
-            record,
-            generation=generation,
-            round_index=round_index,
-            source_kind=source_kind,
+        combined = (
+            *self.opening_candidates_from_record(
+                record,
+                generation=generation,
+                round_index=round_index,
+                source_kind=source_kind,
+            ),
+            *self.candidates_from_record(
+                record,
+                generation=generation,
+                round_index=round_index,
+                source_kind=source_kind,
+            ),
         )
+        # One FEN should count once per game even when it lies in both the early
+        # lane and the ordinary post-opening lane.
+        best_by_position: dict[str, CapturedHardPosition] = {}
+        for row in combined:
+            key = row.evidence.position_key
+            old = best_by_position.get(key)
+            if old is None or row.priority > old.priority:
+                best_by_position[key] = row
+        rows = sorted(best_by_position.values(), key=lambda item: item.priority, reverse=True)
         for row in rows:
             self.store.upsert_hard_position(
                 row.evidence,
@@ -140,7 +250,7 @@ class AlphaBetaTeacherAdapter:
     """Bounded deep-search self-teaching for the live iterative alpha-beta searcher.
 
     `search_multiplier` must not be interpreted as multiplying alpha-beta depth:
-    depth grows exponentially.  Instead we allow at least one extra iterative-
+    depth grows exponentially. Instead we allow at least one extra iterative-
     deepening ply while a wall-clock cap scales from the measured baseline search.
     """
 
