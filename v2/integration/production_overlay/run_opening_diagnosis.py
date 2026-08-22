@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
-from dogmatist_v2.mac_preflight import validate_copied_state
+from dogmatist_v2.mac_preflight import load_snapshot_manifest, validate_copied_state
 from dogmatist_v2.opening_diagnosis import (
     diagnose_openings,
     reset_copied_strength_state,
@@ -24,9 +24,21 @@ def build_diagnosis_plan(
     league_parallel_games: int = 2,
     keep_existing_strength: bool = False,
 ) -> dict[str, object]:
+    snapshot = Path(snapshot_state).expanduser().resolve()
+    manifest = load_snapshot_manifest(snapshot)
+    champion = manifest.champion_generation
+    if champion is None:
+        raise RuntimeError("copied snapshot has no Champion generation")
+    if int(champion) != int(generation):
+        raise ValueError(
+            f"opening diagnosis requested Gen{int(generation)}, but this snapshot starts with "
+            f"Gen{int(champion)} as Champion. Create a fresh snapshot from the intended live Champion "
+            "or pass that Champion generation explicitly."
+        )
+
     plan = build_plan(
         source_copy,
-        snapshot_state,
+        snapshot,
         mode=mode,
         cycles=1,
         hours=None,
@@ -35,6 +47,7 @@ def build_diagnosis_plan(
     )
     plan["opening_diagnosis"] = {
         "generation": int(generation),
+        "snapshot_champion_generation": int(champion),
         "fresh_strength_db": not bool(keep_existing_strength),
         "strength_db_name": "strength_v2.sqlite3",
         "teacher_persistence": False,
@@ -53,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("source_copy", help="copied dog_matist source tree with V2 overlay installed")
-    parser.add_argument("snapshot_state", help="copied state path ending in /.darwinchess")
-    parser.add_argument("--generation", type=int, default=54, help="generation to diagnose (default: 54)")
+    parser.add_argument("snapshot_state", help="fresh copied state path ending in /.darwinchess")
+    parser.add_argument("--generation", type=int, default=54, help="starting Champion to diagnose (default: 54)")
     parser.add_argument("--mode", choices=("eco", "normal", "night"), default="normal")
     parser.add_argument("--league-parallel", type=int, choices=(2, 3), default=2)
     parser.add_argument(
@@ -70,22 +83,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    plan = build_diagnosis_plan(
-        args.source_copy,
-        args.snapshot_state,
-        generation=args.generation,
-        mode=args.mode,
-        league_parallel_games=args.league_parallel,
-        keep_existing_strength=bool(args.keep_existing_strength),
-    )
+    try:
+        plan = build_diagnosis_plan(
+            args.source_copy,
+            args.snapshot_state,
+            generation=args.generation,
+            mode=args.mode,
+            league_parallel_games=args.league_parallel,
+            keep_existing_strength=bool(args.keep_existing_strength),
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"STOP: {exc}")
+        return 2
+
     preflight = validate_copied_state(args.snapshot_state, include_spawn_probe=True)
     preview = {
         "preflight": preflight.as_dict(),
         "plan": plan,
         "will_run": bool(args.run),
         "important": (
-            "When --run is used, only the copied snapshot's strength_v2.sqlite3 is reset by default. "
-            "The live ~/.darwinchess state is never referenced or modified."
+            "The snapshot must start with the requested generation as Champion. When --run is used, "
+            "only the copied snapshot's strength_v2.sqlite3 is reset by default. The live "
+            "~/.darwinchess state is never referenced or modified."
         ),
     }
     print(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -94,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nSTOP: copied-state preflight failed; diagnosis was not launched.")
         return 2
     if not args.run:
-        print("\nDRY RUN ONLY. Add --run after checking the copied source and .darwinchess paths above.")
+        print("\nDRY RUN ONLY. Add --run after checking the copied source, Champion, and .darwinchess paths above.")
         return 0
 
     snapshot = Path(args.snapshot_state).expanduser().resolve()
