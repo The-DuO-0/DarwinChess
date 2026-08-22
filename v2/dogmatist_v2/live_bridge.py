@@ -46,10 +46,11 @@ class LiveGameEvidenceBridge:
     """Convert production GameRecord data into compact StrengthStore evidence.
 
     Ordinary hard-position mining skips the stochastic opening exploration window.
-    A separate opening lane now observes early positions, but it deliberately does
-    *not* call a played-vs-best mismatch a mistake: production self-play may choose
-    a different legal move on purpose to explore. Early positions are retained only
-    when value error/repeated failure supplies independent evidence of weakness.
+    A separate opening lane observes early positions, but does not call a
+    played-vs-best mismatch a mistake: production self-play may choose a different
+    legal move on purpose to explore. Opening severity comes from the *early search
+    evaluation*, not merely the eventual game result, so a move-40 blunder cannot
+    make an otherwise healthy opening look automatically terrible.
     """
 
     _GENERIC_OPENING_LABELS = {"", "unknown", "initial position", "start", "starting position"}
@@ -119,6 +120,7 @@ class LiveGameEvidenceBridge:
         round_index: int,
         source_kind: str,
         suppress_exploration_regret: bool,
+        opening_evidence: bool = False,
     ) -> HardPositionEvidence | None:
         search_score = getattr(example, "search_score_cp", None)
         best_score = getattr(example, "best_score_cp", None)
@@ -127,7 +129,12 @@ class LiveGameEvidenceBridge:
         value_target = float(getattr(example, "value_target", 0.0))
         predicted = cp_to_value(float(search_score), cp_scale=self.cp_scale)
         value_error = min(1.0, abs(predicted - value_target) / 2.0)
-        severity = max(0.0, -value_target)
+
+        # General hard-position mining can use the eventual result as loss
+        # pressure. The opening lane must instead ask whether the *early position*
+        # was already bad. Otherwise every later tactical loss would mark all
+        # opening plies as severity=1 and poison the opening diagnosis.
+        severity = max(0.0, -predicted) if opening_evidence else max(0.0, -value_target)
 
         policy_surprise = 0.0
         if best_score is not None:
@@ -172,6 +179,7 @@ class LiveGameEvidenceBridge:
                 round_index=round_index,
                 source_kind=source_kind,
                 suppress_exploration_regret=False,
+                opening_evidence=False,
             )
             if evidence is not None:
                 rows.append(CapturedHardPosition(evidence, evidence.priority, ply_index))
@@ -198,6 +206,7 @@ class LiveGameEvidenceBridge:
                 round_index=round_index,
                 source_kind=f"{source_kind}_opening",
                 suppress_exploration_regret=True,
+                opening_evidence=True,
             )
             if evidence is not None:
                 rows.append(CapturedHardPosition(evidence, evidence.priority, ply_index))
