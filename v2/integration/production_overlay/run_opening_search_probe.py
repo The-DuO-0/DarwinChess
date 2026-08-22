@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -42,10 +43,46 @@ def _first(value: Any, keys: tuple[str, ...]) -> Any | None:
     return None
 
 
+def _parse_production_text(text: str) -> dict[str, object] | None:
+    """Parse the human-readable output emitted by the production ``analyze`` CLI.
+
+    The current Mac build prints a Chinese sentence such as::
+
+        我会走 Nf3 (g1f3)。当前搜索评价约 +51cp ... 搜索深度 3，访问 6657 个节点；...
+
+    Keep this fallback deliberately narrow: the UCI move inside parentheses is
+    authoritative, while SAN/localized prose is display-only. JSON remains the
+    preferred format if production adds it later.
+    """
+
+    move_match = re.search(
+        r"我会走\s+[^\s(。]+\s*\(([a-h][1-8][a-h][1-8][qrbn]?)\)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if move_match is None:
+        return None
+
+    score_match = re.search(
+        r"当前搜索评价约\s*([+-]?\d+(?:\.\d+)?)\s*cp",
+        text,
+        flags=re.IGNORECASE,
+    )
+    depth_match = re.search(r"搜索深度\s*(\d+)", text)
+    nodes_match = re.search(r"访问\s*(\d+)\s*个节点", text)
+
+    return {
+        "move": move_match.group(1).lower(),
+        "score_cp": float(score_match.group(1)) if score_match else None,
+        "depth": int(depth_match.group(1)) if depth_match else None,
+        "elapsed_s": None,
+        "nodes": int(nodes_match.group(1)) if nodes_match else None,
+        "raw_text": text,
+    }
+
+
 def parse_analysis_stdout(text: str) -> dict[str, object]:
     candidates = list(_json_objects(text))
-    if not candidates:
-        raise RuntimeError("darwinchess analyze did not emit a JSON object")
     for payload in reversed(candidates):
         move = _first(payload, ("best_move", "move_uci", "move", "best_move_uci"))
         if move is None:
@@ -60,7 +97,16 @@ def parse_analysis_stdout(text: str) -> dict[str, object]:
             "elapsed_s": float(elapsed) if elapsed is not None else None,
             "raw": payload,
         }
-    raise RuntimeError("could not find a move field in darwinchess analyze output")
+
+    production = _parse_production_text(text)
+    if production is not None:
+        return production
+
+    tail = text[-1200:].strip()
+    raise RuntimeError(
+        "could not parse darwinchess analyze output; expected JSON or the production human-readable summary"
+        + (f":\n{tail}" if tail else "")
+    )
 
 
 def _source_cli(source_copy: Path) -> Path:
