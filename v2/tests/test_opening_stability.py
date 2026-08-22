@@ -74,6 +74,5 @@ def test_move_flip_with_small_score_delta_is_visible_but_not_overcalled_alone():
     )
     report = build_stability_report(54, 2, 3, [row])
     assert row.status() == "MOVE_FLIP"
-    # A single move flip is 100% of a one-position sample, so the report remains
-    # conservative only when several positions are supplied by the real probe.
     assert report.move_flips == 1
+    assert report.early_search_unstable is False
