@@ -30,7 +30,7 @@ The root probe remained repaired: search-r1 `h2h4` -> search-r2c `e2e4`.
 
 It then samples unique remaining curated opening starts and plays each twice with colours swapped. The checkpoint/model weights stay frozen and only the search revision changes.
 
-The immutable search-r1 configuration on the same frozen Gen54 weights is the engine reference. Paired-colour score 0.5 is the neutral reference point, so `fixed_reference_delta = holdout_score - 0.5`.
+For this engine-only experiment, the immutable reference is the exact frozen Gen54 model running baseline `search-r1`. Because each holdout start is colour-paired, 0.5 is the neutral reference score. The gate therefore records `fixed_reference_delta = holdout_score - 0.5`. This is an engine-revision reference delta, not a claim that the model weights changed.
 
 The existing `EngineRevisionGate` is applied without weakening thresholds:
 
