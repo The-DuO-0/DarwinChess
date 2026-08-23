@@ -3,6 +3,7 @@ from dogmatist_v2.opening_search_revision import (
     OpeningSearchR2Policy,
     OpeningSearchRevisionPlan,
     candidate_scores,
+    select_holdout_opening_names,
     select_verification_candidates,
 )
 from dogmatist_v2.opening_stability import OpeningSearchObservation, build_stability_report
@@ -109,6 +110,33 @@ def test_selective_pool_can_reinsert_previous_move_when_at_capacity():
     assert len(selected) == 6
     assert selected[0] == "m0"
     assert "oldpv" in selected
+
+
+def test_holdout_selector_is_disjoint_unique_and_deterministic():
+    names = [
+        "Open Game", "Italian", "Ruy Lopez", "Scotch", "Sicilian", "French",
+        "Caro-Kann", "Pirc", "Queen's Gambit", "Slav", "King's Indian",
+        "Nimzo-Indian", "English", "Reti", "Bird", "Scandinavian",
+    ]
+    development = {
+        "Nimzo-Indian", "King's Indian", "French", "Queen's Gambit", "Pirc",
+    }
+    first = select_holdout_opening_names(
+        names,
+        excluded_names=development,
+        pair_count=6,
+        seed=20260823,
+    )
+    second = select_holdout_opening_names(
+        names,
+        excluded_names=development,
+        pair_count=6,
+        seed=20260823,
+    )
+    assert first == second
+    assert len(first) == 6
+    assert len(set(first)) == 6
+    assert not (set(first) & development)
 
 
 def test_later_opening_ply_deepens_when_candidate_margin_is_small():
