@@ -12,8 +12,19 @@ NEW_EVOLVE = '''def cmd_evolve(args) -> int:\n    with _runtime(args) as rt:\n  
 
 STUDIO_DYNASTY_IMPORT = "from .pages.dynasty import DynastyPage\n"
 STUDIO_EVOLUTION_IMPORT = "from .pages.evolution import EvolutionPage\n"
+STUDIO_SCROLL_IMPORT = "from .scroll_host import scroll_page\n"
 STUDIO_EVOLUTION_PAGE = '            ("Evolution", EvolutionPage(self.process)),\n'
 STUDIO_DYNASTY_PAGE = '            ("Dynasty Archive", DynastyPage()),\n'
+STUDIO_EVOLUTION_SCROLL_PAGE = (
+    '            ("Evolution", scroll_page(EvolutionPage(self.process), min_content_height=1220)),\n'
+)
+STUDIO_DYNASTY_SCROLL_PAGE = (
+    '            ("Dynasty Archive", scroll_page(DynastyPage(), min_content_height=1080)),\n'
+)
+STUDIO_OLD_SIZE = "        self.resize(1380, 900)\n"
+STUDIO_NEW_SIZE = "        self.resize(1500, 940)\n"
+STUDIO_OLD_MINIMUM = "        self.setMinimumSize(1080, 720)\n"
+STUDIO_NEW_MINIMUM = "        self.setMinimumSize(1100, 720)\n"
 
 
 @dataclass(frozen=True)
@@ -30,9 +41,11 @@ class OverlayPlan:
     source_studio_backend: Path
     source_evolution_page: Path
     source_dynasty_page: Path
+    source_scroll_host: Path
     target_studio_backend: Path
     target_evolution_page: Path
     target_dynasty_page: Path
+    target_scroll_host: Path
     target_studio_app: Path
 
 
@@ -55,9 +68,11 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
     target_app = target / "studio" / "app.py"
     target_evolution = target / "studio" / "pages" / "evolution.py"
     target_dynasty = target / "studio" / "pages" / "dynasty.py"
+    target_scroll_host = target / "studio" / "scroll_host.py"
     source_backend = overlay_root / "studio" / "backend.py"
     source_evolution = overlay_root / "studio" / "pages" / "evolution.py"
     source_dynasty = overlay_root / "studio" / "pages" / "dynasty.py"
+    source_scroll_host = overlay_root / "studio" / "scroll_host.py"
 
     required = [
         source,
@@ -73,6 +88,7 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         source_backend,
         source_evolution,
         source_dynasty,
+        source_scroll_host,
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -93,9 +109,11 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         source_backend,
         source_evolution,
         source_dynasty,
+        source_scroll_host,
         target_backend,
         target_evolution,
         target_dynasty,
+        target_scroll_host,
         target_app,
     )
 
@@ -132,14 +150,28 @@ def patch_studio_app(text: str) -> str:
             STUDIO_EVOLUTION_IMPORT + STUDIO_DYNASTY_IMPORT,
             1,
         )
-    if STUDIO_DYNASTY_PAGE not in text:
-        if STUDIO_EVOLUTION_PAGE not in text:
-            raise RuntimeError("could not find Studio Evolution page anchor")
+    if STUDIO_SCROLL_IMPORT not in text:
         text = text.replace(
-            STUDIO_EVOLUTION_PAGE,
-            STUDIO_EVOLUTION_PAGE + STUDIO_DYNASTY_PAGE,
+            STUDIO_DYNASTY_IMPORT,
+            STUDIO_DYNASTY_IMPORT + STUDIO_SCROLL_IMPORT,
             1,
         )
+
+    if STUDIO_DYNASTY_PAGE not in text and STUDIO_DYNASTY_SCROLL_PAGE not in text:
+        anchor = STUDIO_EVOLUTION_PAGE if STUDIO_EVOLUTION_PAGE in text else STUDIO_EVOLUTION_SCROLL_PAGE
+        if anchor not in text:
+            raise RuntimeError("could not find Studio Evolution page anchor")
+        text = text.replace(anchor, anchor + STUDIO_DYNASTY_PAGE, 1)
+
+    if STUDIO_EVOLUTION_PAGE in text:
+        text = text.replace(STUDIO_EVOLUTION_PAGE, STUDIO_EVOLUTION_SCROLL_PAGE, 1)
+    if STUDIO_DYNASTY_PAGE in text:
+        text = text.replace(STUDIO_DYNASTY_PAGE, STUDIO_DYNASTY_SCROLL_PAGE, 1)
+
+    if STUDIO_OLD_SIZE in text:
+        text = text.replace(STUDIO_OLD_SIZE, STUDIO_NEW_SIZE, 1)
+    if STUDIO_OLD_MINIMUM in text:
+        text = text.replace(STUDIO_OLD_MINIMUM, STUDIO_NEW_MINIMUM, 1)
     return text
 
 
@@ -167,6 +199,8 @@ def apply_overlay(plan: OverlayPlan) -> None:
         _backup(path)
     if plan.target_dynasty_page.exists():
         _backup(plan.target_dynasty_page)
+    if plan.target_scroll_host.exists():
+        _backup(plan.target_scroll_host)
 
     if plan.target_package.exists():
         backup_package = plan.target_root / "dogmatist_v2.pre_v2"
@@ -186,6 +220,7 @@ def apply_overlay(plan: OverlayPlan) -> None:
     shutil.copy2(plan.source_studio_backend, plan.target_studio_backend)
     shutil.copy2(plan.source_evolution_page, plan.target_evolution_page)
     shutil.copy2(plan.source_dynasty_page, plan.target_dynasty_page)
+    shutil.copy2(plan.source_scroll_host, plan.target_scroll_host)
 
 
 def describe(plan: OverlayPlan) -> str:
@@ -201,6 +236,9 @@ def describe(plan: OverlayPlan) -> str:
         f"  replace UI:   {plan.target_evolution_page}",
         f"  patch UI nav: {plan.target_studio_app}",
         f"  add UI page:  {plan.target_dynasty_page}",
+        f"  add UI scroll:{plan.target_scroll_host}",
+        "  dense pages:  Evolution/Dynasty use outer vertical scrolling instead of squeezing cards",
+        "  window:       Studio opens larger while remaining resizable",
         "  state data:   NOT touched by this installer",
         "  teacher:      defaults OFF until copied-state validation passes",
         "  opening book: NOT injected; search-r2 only spends one extra ply when enabled",
