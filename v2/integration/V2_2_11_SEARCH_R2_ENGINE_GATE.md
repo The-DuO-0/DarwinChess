@@ -66,27 +66,42 @@ Both decisive losses occurred in the Slav pair; all other holdout games were dra
 
 The failed holdout is now consumed diagnostic data. It must not be reused as the final acceptance holdout for a later revision.
 
-## Failure forensics before r2d
+## Slav failure forensics
 
-`run_search_r2_failure_probe.py` replays one or more failed holdout openings (default: Slav), records every position where r2c actually spends selective +1 search, and then analyzes those exact FENs three ways:
+The real Mac Slav replay captured four unique positions where r2c spent selective +1 search. Comparing r1 depth 2, the r2c move, and a fresh full-root depth 3 on the exact same FENs produced:
 
-1. baseline search-r1 at depth 2;
-2. the move r2c selected during the game;
-3. a fresh full-root depth-3 search with stabilization disabled.
+- helpful flips: 1
+- harmful flips: 0
+- same as full depth 3: 1
+- both differ from full depth 3: 2
+- r2c/full-depth3 move match rate: 0.500
+- r1/full-depth3 move match rate: 0.250
+- mean r2c regret vs full depth 3: 29.4 cp
+- mean r1 regret vs full depth 3: 49.3 cp
 
-For every stabilization it classifies the change as:
+The most important observation is **zero harmful flips**. In the captured failure positions r2c was, on average, closer to full depth 3 than r1, yet the candidate still lost both Slav games. Therefore the first holdout failure cannot be explained simply as "selective-root picked the wrong deeper move".
 
-- `helpful_flip`: r2c matches full depth 3 while r1 does not;
-- `harmful_flip`: r1 matches full depth 3 while r2c does not;
-- `same_as_full`: both match full depth 3;
-- `both_differ_from_full`: neither matches full depth 3.
+This points to a second failure mode: an opening move that is locally preferred by deeper search may hand the game to a shallower continuation policy that cannot exploit or safely maintain the resulting position. Full depth 3 is also only a diagnostic reference, not ground truth for winning chess.
 
-It also reports candidate and baseline regret in centipawns relative to the full depth-3 best move. This distinguishes two very different failure modes:
+## Counterfactual handoff probe before r2d
 
-- the selective-root approximation chose the wrong deeper move, suggesting a safer replacement rule or a better verification set;
-- full depth 3 itself prefers the r2c move, suggesting the loss is not simply a selective-root bug and the opening policy/trigger needs a different treatment.
+`run_search_r2_handoff_probe.py` consumes the failure-forensics JSON and tests only positions where r1 and r2c actually chose different moves. For each divergence it creates two counterfactual branches:
 
-No r2d policy should be tuned until this diagnosis is available. Once Slav is used for failure analysis, the next final holdout must exclude both the original development openings and this first holdout set.
+1. force the r1 move;
+2. force the r2c move.
+
+After the forced move, **both sides use the same search-r1 continuation policy**, first at depth 2 and then at depth 3. This removes the original asymmetric r1-vs-r2c match from the continuation and asks a causal question: did the opening move itself improve the position for the policy that inherits it?
+
+Each divergence is classified as:
+
+- `candidate_supported`: r2c branch is not worse under either common continuation;
+- `continuation_mismatch`: r2c branch is worse under shallow continuation but not under deeper continuation;
+- `candidate_harmful`: r2c branch is worse under both common continuations;
+- `mixed`: shallow continuation likes r2c but deeper continuation does not.
+
+A `continuation_mismatch` result would support a new r2d design based on safe handoff/phase consistency rather than another arbitrary opening threshold. A `candidate_harmful` result would instead mean full-depth3 agreement was an unreliable local teacher. `candidate_supported` would suggest that the two Slav losses are more likely a small-sample or multi-trigger interaction and should not be used to overfit r2d.
+
+No r2d policy should be tuned until this counterfactual diagnosis is available. Slav and the first holdout set remain consumed diagnostic data and must stay excluded from the next final holdout.
 
 ## Adoption rule
 
