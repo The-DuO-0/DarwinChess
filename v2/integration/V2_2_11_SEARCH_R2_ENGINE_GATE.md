@@ -81,7 +81,9 @@ The failure is therefore not explained by a simple selective-root blunder. Searc
 
 A fresh release snapshot was created from live state, the release candidate was explicitly verified to have `opening_stabilization = {}` / `search-r1`, and one complete copied-state Evolution cycle was run on the real Mac with the integrated V2.2 stack. Result: `validation: PASS`.
 
-This full-cycle PASS closes the engine/runtime release gate. Remaining release work is Studio/UI smoke validation and live-state backup/path verification before installation.
+This full-cycle PASS closes the engine/runtime release gate. The Studio overlay now also wires a dedicated read-only **Dynasty Archive** page into the uploaded production Studio. It reconstructs champion reigns and generation lineage from the durable production SQLite history, refreshes live, and never loads model checkpoints merely to render history.
+
+Remaining release work is Studio/UI smoke validation and live-state backup/path verification before installation.
 
 ## Adoption rule
 
