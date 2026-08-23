@@ -66,43 +66,23 @@ Both decisive losses occurred in the Slav pair; all other holdout games were dra
 
 The failed holdout is now consumed diagnostic data. It must not be reused as the final acceptance holdout for a later revision.
 
-## Slav failure forensics
+## Failure forensics and handoff result
 
-The real Mac Slav replay captured four unique positions where r2c spent selective +1 search. Comparing r1 depth 2, the r2c move, and a fresh full-root depth 3 on the exact same FENs produced:
+Failure forensics on the Slav losses found no immediate harmful flip. Across the four stabilization positions, r2c matched the fresh full-depth3 best move 50% of the time versus 25% for r1, with lower mean immediate regret (29.4cp vs 49.3cp).
 
-- helpful flips: 1
-- harmful flips: 0
-- same as full depth 3: 1
-- both differ from full depth 3: 2
-- r2c/full-depth3 move match rate: 0.500
-- r1/full-depth3 move match rate: 0.250
-- mean r2c regret vs full depth 3: 29.4 cp
-- mean r1 regret vs full depth 3: 49.3 cp
+Counterfactual continuation then isolated the two positions where r1 and r2c actually chose different moves:
 
-The most important observation is **zero harmful flips**. In the captured failure positions r2c was, on average, closer to full depth 3 than r1, yet the candidate still lost both Slav games. Therefore the first holdout failure cannot be explained simply as "selective-root picked the wrong deeper move".
+- one `continuation_mismatch`: the deeper opening choice was locally sensible, but its branch degraded when inherited by common shallow depth-2 continuation;
+- one `mixed` case: the candidate did not show a stable long-horizon advantage even under common deeper continuation.
 
-This points to a second failure mode: an opening move that is locally preferred by deeper search may hand the game to a shallower continuation policy that cannot exploit or safely maintain the resulting position. Full depth 3 is also only a diagnostic reference, not ground truth for winning chess.
+The failure is therefore not explained by a simple selective-root blunder. Search-r2 research is archived as R&D and does not block the V2.2 release candidate. Stable `search-r1` remains production.
 
-## Counterfactual handoff probe before r2d
+## Release-candidate copied-state validation
 
-`run_search_r2_handoff_probe.py` consumes the failure-forensics JSON and tests only positions where r1 and r2c actually chose different moves. For each divergence it creates two counterfactual branches:
+A fresh release snapshot was created from live state, the release candidate was explicitly verified to have `opening_stabilization = {}` / `search-r1`, and one complete copied-state Evolution cycle was run on the real Mac with the integrated V2.2 stack. Result: `validation: PASS`.
 
-1. force the r1 move;
-2. force the r2c move.
-
-After the forced move, **both sides use the same search-r1 continuation policy**, first at depth 2 and then at depth 3. This removes the original asymmetric r1-vs-r2c match from the continuation and asks a causal question: did the opening move itself improve the position for the policy that inherits it?
-
-Each divergence is classified as:
-
-- `candidate_supported`: r2c branch is not worse under either common continuation;
-- `continuation_mismatch`: r2c branch is worse under shallow continuation but not under deeper continuation;
-- `candidate_harmful`: r2c branch is worse under both common continuations;
-- `mixed`: shallow continuation likes r2c but deeper continuation does not.
-
-A `continuation_mismatch` result would support a new r2d design based on safe handoff/phase consistency rather than another arbitrary opening threshold. A `candidate_harmful` result would instead mean full-depth3 agreement was an unreliable local teacher. `candidate_supported` would suggest that the two Slav losses are more likely a small-sample or multi-trigger interaction and should not be used to overfit r2d.
-
-No r2d policy should be tuned until this counterfactual diagnosis is available. Slav and the first holdout set remain consumed diagnostic data and must stay excluded from the next final holdout.
+This full-cycle PASS closes the engine/runtime release gate. Remaining release work is Studio/UI smoke validation and live-state backup/path verification before installation.
 
 ## Adoption rule
 
-Even an `ACCEPT` from a future untouched holdout does not silently modify live production. It is evidence permitting the revision to be registered/adopted through the explicit engine-revision lifecycle, followed by a copied-state full-cycle validation before any live installation.
+Even an `ACCEPT` from a future untouched search holdout does not silently modify live production. It is evidence permitting the revision to be registered/adopted through the explicit engine-revision lifecycle, followed by a copied-state full-cycle validation before any live installation.
