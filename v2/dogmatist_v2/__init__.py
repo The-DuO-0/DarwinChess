@@ -1,22 +1,78 @@
-from .archive import ArchiveEntry, ArchivePolicy, ArchiveTier, CompactCheckpointPlan, choose_archive_tier
+"""DogMatist v2: population/league/OpenTree evolution primitives."""
+
+from .archive import (
+    ArchiveEntry,
+    ArchivePolicy,
+    ArchiveTier,
+    CompactCheckpointPlan,
+    choose_archive_tier,
+)
 from .chronicle_store import ChronicleStore
-from .dynasty import ChampionReign, GenerationChronicle, GenerationLife, HistoricalEvent, HistoricalRole, build_lineage_path
-from .fixed_reference import FixedReferenceEvaluator, FixedReferenceResult, FrozenReferenceManager, FrozenStrengthReference
+from .dynasty import (
+    ChampionReign,
+    GenerationChronicle,
+    GenerationLife,
+    HistoricalEvent,
+    HistoricalRole,
+    build_lineage_path,
+)
+from .fixed_reference import (
+    FixedReferenceEvaluator,
+    FixedReferenceResult,
+    FrozenReferenceManager,
+    FrozenStrengthReference,
+    checkpoint_sha256,
+)
 from .hard_positions import HardPositionCandidate, HardPositionMiner
-from .league import LeagueCandidate, LeagueMatch, LeagueResult, select_league_shortlist
-from .live_arena_guard import LiveArenaGuard
-from .live_bridge import LiveProductionBridge
-from .live_compute import LiveComputeBudget
-from .live_cycle_override import LiveCycleOverride
-from .live_entrypoint import LiveEntrypoint
-from .live_league_guard import LiveLeagueGuard
-from .live_parallel_league import LiveLeagueProcessPool, LiveLeagueWorkerResult, LiveLeagueWorkerTask, choose_live_league_parallelism, league_worker_threads
-from .live_runtime import LiveRuntime
-from .live_strength import LiveStrengthLab
-from .live_strength_adapters import LiveReplaySink, LiveSearchTeacher, LiveTraceSource
-from .live_strength_pipeline import LiveStrengthPipeline
-from .mac_preflight import SnapshotManifest, ValidationCheck, ValidationReport, load_snapshot_manifest, validate_copied_state
-from .opening_repair import OpeningRepairPlan, OpeningRepairTarget, build_opening_repair_plan
+from .league import Candidate, MatchResult, LeagueTable, select_survivors
+from .live_arena_guard import (
+    LiveArenaDrainOverride,
+    LiveArenaDrainState,
+    build_budget_aware_arena,
+)
+from .live_bridge import (
+    AlphaBetaTeacherAdapter,
+    CapturedHardPosition,
+    LiveGameEvidenceBridge,
+    TeacherReplayTarget,
+    TeacherSearchBudget,
+    cp_to_value,
+)
+from .live_compute import ComputeSnapshot, HeartbeatComputeClock
+from .live_cycle_override import LiveStrengthCycleOverride
+from .live_fixed_reference import (
+    LiveFixedReferenceCoordinator,
+    LiveFixedReferenceCycleOverride,
+    LiveFixedReferenceReport,
+)
+from .live_game_watchdog import LiveGameWatchdogPolicy, install_live_game_watchdog_policy
+from .live_league_guard import (
+    DrainedArenaResult,
+    LiveLeagueDrainOverride,
+    LiveLeagueDrainState,
+    build_budget_aware_population_arena,
+)
+from .live_parallel_league import (
+    LiveLeagueProcessPool,
+    LiveLeagueWorkerResult,
+    LiveLeagueWorkerTask,
+    LiveParallelLeagueExecution,
+    choose_live_league_parallelism,
+    league_worker_threads,
+)
+from .live_parallel_population import LiveParallelLeagueOverride, build_parallel_population_arena
+from .live_replay import LiveReplayMixSampler, LiveReplayOverride, ReplayBatchQuota
+from .live_runner import LiveEvolutionRunReport, LiveEvolutionRunner
+from .live_runtime_overlay import LiveReplayExample, LiveStrengthCoordinator, LiveStrengthRoundReport
+from .mac_preflight import (
+    MacPreflightReport,
+    PreflightCheck,
+    audit_copied_state_after_run,
+    load_snapshot_manifest,
+    run_spawn_probe,
+    validate_copied_state,
+)
+from .opening_lab import OpeningBucketSignal, OpeningRepairPlan, OpeningWeaknessController
 from .opening_search_revision import (
     CandidateScore,
     OpeningDeepeningDecision,
@@ -29,12 +85,44 @@ from .opening_search_revision import (
     select_verification_candidates,
 )
 from .opening_stability import OpeningSearchObservation, OpeningSearchStabilityReport, build_stability_report
-from .population import PopulationCandidate, PopulationTrainer
-from .production_bridge import ProductionBridge
-from .resource import ResourceBudget, ResourceController, ResourceSnapshot
-from .runtime import ColorPairing, ComputeBudgetClock, GameRuntimeStatus, GameState, LeaguePairScheduler, WatchdogTrip
+from .opentree_guard import GuardDecision, OpenTreeStrengthGuard, TrialEvidence
+from .opentree_policy import (
+    CurriculumMix,
+    OpenTreeCurriculumController,
+    OpenTreePolicy,
+    TreeHealth,
+)
+from .opentree_promotion import (
+    OpenTreePromotionCoordinator,
+    PromotionDecision,
+    PromotionEvidence,
+)
+from .opentree_report import (
+    OpenTreeExperimentReport,
+    OpenTreeExperimentSummary,
+    OpenTreeRoundTrace,
+)
+from .opentree_trials import OpenTreePolicyTrialManager, PolicyTrial, TrialResult
+from .promotion_bridge import ChampionCheckpoint, PromotionChronicleBridge
+from .resource import ResourceBudget, ResourceController, ResourceSample
+from .runtime import (
+    ColorPairing,
+    ComputeBudgetClock,
+    GameState,
+    GameWatchdog,
+    LeagueGameSpec,
+    LeagueGameStatus,
+    LeaguePairScheduler,
+    WatchdogTrip,
+)
 from .search_forensics import SearchForensicRow, SearchForensicsSummary, summarize_search_forensics
-from .specialists import OpeningSpecialist, SpecialistArchive
+from .specialist_bridge import (
+    SpecialistCheckpoint,
+    SpecialistChronicleBridge,
+    parse_generation_id,
+)
+from .specialists import OpeningBucket, SpecialistArchive, SpecialistRecord
+from .strength_bridge import PositionObservation, StrengthCapturePolicy, StrengthEvidenceBridge
 from .strength_lab import (
     EngineGateAction,
     EngineGateDecision,
@@ -48,9 +136,21 @@ from .strength_lab import (
     StrengthMode,
     TrainingBatchBudget,
 )
-from .strength_pipeline import DeepSearchTeacherRequest, EngineABTrialPlan, StrengthPipelinePlanner, StrengthRoundRecipe
+from .strength_pipeline import (
+    DeepSearchTeacherRequest,
+    EngineABTrialPlan,
+    StrengthPipelinePlanner,
+    StrengthRoundRecipe,
+)
 from .strength_store import HardPositionEvidence, StrengthStore
-from .ui_flow import EvolutionFlowSnapshot, build_evolution_flow_snapshot, encode_ui_event
+from .ui_flow import (
+    EvolutionFlowSnapshot,
+    EvolutionStage,
+    build_evolution_flow_snapshot,
+    encode_ui_event,
+)
+from .validation_telemetry import ValidationTelemetry
+from .worker_supervisor import KillableWorker, LeagueWorkerSupervisor, WorkerTermination
 
 __all__ = [
     "ArchiveEntry",
@@ -69,37 +169,59 @@ __all__ = [
     "FixedReferenceResult",
     "FrozenReferenceManager",
     "FrozenStrengthReference",
+    "checkpoint_sha256",
     "HardPositionCandidate",
     "HardPositionMiner",
-    "LeagueCandidate",
-    "LeagueMatch",
-    "LeagueResult",
-    "select_league_shortlist",
-    "LiveArenaGuard",
-    "LiveProductionBridge",
-    "LiveComputeBudget",
-    "LiveCycleOverride",
-    "LiveEntrypoint",
-    "LiveLeagueGuard",
+    "Candidate",
+    "MatchResult",
+    "LeagueTable",
+    "select_survivors",
+    "LiveArenaDrainOverride",
+    "LiveArenaDrainState",
+    "build_budget_aware_arena",
+    "AlphaBetaTeacherAdapter",
+    "CapturedHardPosition",
+    "LiveGameEvidenceBridge",
+    "TeacherReplayTarget",
+    "TeacherSearchBudget",
+    "cp_to_value",
+    "ComputeSnapshot",
+    "HeartbeatComputeClock",
+    "LiveStrengthCycleOverride",
+    "LiveFixedReferenceCoordinator",
+    "LiveFixedReferenceCycleOverride",
+    "LiveFixedReferenceReport",
+    "LiveGameWatchdogPolicy",
+    "install_live_game_watchdog_policy",
+    "DrainedArenaResult",
+    "LiveLeagueDrainOverride",
+    "LiveLeagueDrainState",
+    "build_budget_aware_population_arena",
     "LiveLeagueProcessPool",
     "LiveLeagueWorkerResult",
     "LiveLeagueWorkerTask",
+    "LiveParallelLeagueExecution",
     "choose_live_league_parallelism",
     "league_worker_threads",
-    "LiveRuntime",
-    "LiveStrengthLab",
-    "LiveReplaySink",
-    "LiveSearchTeacher",
-    "LiveTraceSource",
-    "LiveStrengthPipeline",
-    "SnapshotManifest",
-    "ValidationCheck",
-    "ValidationReport",
+    "LiveParallelLeagueOverride",
+    "build_parallel_population_arena",
+    "LiveReplayMixSampler",
+    "LiveReplayOverride",
+    "ReplayBatchQuota",
+    "LiveEvolutionRunReport",
+    "LiveEvolutionRunner",
+    "LiveReplayExample",
+    "LiveStrengthCoordinator",
+    "LiveStrengthRoundReport",
+    "MacPreflightReport",
+    "PreflightCheck",
+    "audit_copied_state_after_run",
     "load_snapshot_manifest",
+    "run_spawn_probe",
     "validate_copied_state",
+    "OpeningBucketSignal",
     "OpeningRepairPlan",
-    "OpeningRepairTarget",
-    "build_opening_repair_plan",
+    "OpeningWeaknessController",
     "CandidateScore",
     "OpeningDeepeningDecision",
     "OpeningSearchEvidence",
@@ -112,23 +234,47 @@ __all__ = [
     "OpeningSearchObservation",
     "OpeningSearchStabilityReport",
     "build_stability_report",
-    "PopulationCandidate",
-    "PopulationTrainer",
-    "ProductionBridge",
+    "GuardDecision",
+    "OpenTreeStrengthGuard",
+    "TrialEvidence",
+    "CurriculumMix",
+    "OpenTreeCurriculumController",
+    "OpenTreePolicy",
+    "TreeHealth",
+    "OpenTreePromotionCoordinator",
+    "PromotionDecision",
+    "PromotionEvidence",
+    "OpenTreeExperimentReport",
+    "OpenTreeExperimentSummary",
+    "OpenTreeRoundTrace",
+    "OpenTreePolicyTrialManager",
+    "PolicyTrial",
+    "TrialResult",
+    "ChampionCheckpoint",
+    "PromotionChronicleBridge",
     "ResourceBudget",
     "ResourceController",
-    "ResourceSnapshot",
+    "ResourceSample",
     "ColorPairing",
     "ComputeBudgetClock",
-    "GameRuntimeStatus",
     "GameState",
+    "GameWatchdog",
+    "LeagueGameSpec",
+    "LeagueGameStatus",
     "LeaguePairScheduler",
     "WatchdogTrip",
     "SearchForensicRow",
     "SearchForensicsSummary",
     "summarize_search_forensics",
-    "OpeningSpecialist",
+    "SpecialistCheckpoint",
+    "SpecialistChronicleBridge",
+    "parse_generation_id",
+    "OpeningBucket",
     "SpecialistArchive",
+    "SpecialistRecord",
+    "PositionObservation",
+    "StrengthCapturePolicy",
+    "StrengthEvidenceBridge",
     "EngineGateAction",
     "EngineGateDecision",
     "EngineRevisionGate",
@@ -147,6 +293,11 @@ __all__ = [
     "HardPositionEvidence",
     "StrengthStore",
     "EvolutionFlowSnapshot",
+    "EvolutionStage",
     "build_evolution_flow_snapshot",
     "encode_ui_event",
+    "ValidationTelemetry",
+    "KillableWorker",
+    "LeagueWorkerSupervisor",
+    "WorkerTermination",
 ]
