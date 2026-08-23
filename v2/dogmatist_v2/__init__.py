@@ -116,6 +116,7 @@ from .runtime import (
     WatchdogTrip,
 )
 from .search_forensics import SearchForensicRow, SearchForensicsSummary, summarize_search_forensics
+from .search_handoff import HandoffBranchEvidence, HandoffDiagnosis
 from .specialist_bridge import (
     SpecialistCheckpoint,
     SpecialistChronicleBridge,
@@ -266,6 +267,8 @@ __all__ = [
     "SearchForensicRow",
     "SearchForensicsSummary",
     "summarize_search_forensics",
+    "HandoffBranchEvidence",
+    "HandoffDiagnosis",
     "SpecialistCheckpoint",
     "SpecialistChronicleBridge",
     "parse_generation_id",
