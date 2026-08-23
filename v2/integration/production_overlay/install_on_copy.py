@@ -10,6 +10,11 @@ CLI_IMPORT = "from dogmatist_v2.live_entrypoint import LiveEvolutionOptions, run
 OLD_EVOLVE = '''def cmd_evolve(args) -> int:\n    with _runtime(args) as rt:\n        try:\n            rt.evolve(hours=args.hours, cycles=args.cycles)\n        except KeyboardInterrupt:\n            print("\\nInterrupted safely. Completed games and accepted checkpoints were already committed.")\n        print(json.dumps(rt.status(), ensure_ascii=False, indent=2))\n    return 0\n'''
 NEW_EVOLVE = '''def cmd_evolve(args) -> int:\n    with _runtime(args) as rt:\n        v2cfg = rt.config.get("v2_live", {})\n        options = LiveEvolutionOptions(\n            targeted_examples=int(v2cfg.get("targeted_examples", 64)),\n            teacher_request_cap=int(v2cfg.get("teacher_request_cap", 8)),\n            persist_teacher=bool(v2cfg.get("persist_teacher", False)),\n            enable_parallel_league=bool(v2cfg.get("parallel_league", True)),\n            strength_fail_open=bool(v2cfg.get("strength_fail_open", True)),\n            parallel_league_fail_open=bool(v2cfg.get("parallel_league_fail_open", True)),\n            watchdog_stall_seconds=float(v2cfg.get("watchdog_stall_seconds", 30 * 60)),\n            watchdog_emergency_game_seconds=float(v2cfg.get("watchdog_emergency_game_seconds", 2 * 60 * 60)),\n            watchdog_kill_grace_seconds=float(v2cfg.get("watchdog_kill_grace_seconds", 2.0)),\n            enable_fixed_reference=bool(v2cfg.get("fixed_reference", True)),\n            fixed_reference_pairs=int(v2cfg.get("fixed_reference_pairs", 2)),\n            fixed_reference_fail_open=bool(v2cfg.get("fixed_reference_fail_open", True)),\n            handle_sigint=True,\n        )\n        try:\n            run_live_evolution(\n                rt,\n                hours=args.hours,\n                cycles=args.cycles,\n                options=options,\n            )\n        except KeyboardInterrupt:\n            print("\\nEmergency stop after a second interrupt. Durable completed games/checkpoints remain committed.")\n        print(json.dumps(rt.status(), ensure_ascii=False, indent=2))\n    return 0\n'''
 
+STUDIO_DYNASTY_IMPORT = "from .pages.dynasty import DynastyPage\n"
+STUDIO_EVOLUTION_IMPORT = "from .pages.evolution import EvolutionPage\n"
+STUDIO_EVOLUTION_PAGE = '            ("Evolution", EvolutionPage(self.process)),\n'
+STUDIO_DYNASTY_PAGE = '            ("Dynasty Archive", DynastyPage()),\n'
+
 
 @dataclass(frozen=True)
 class OverlayPlan:
@@ -24,8 +29,11 @@ class OverlayPlan:
     target_parallel_selfplay: Path
     source_studio_backend: Path
     source_evolution_page: Path
+    source_dynasty_page: Path
     target_studio_backend: Path
     target_evolution_page: Path
+    target_dynasty_page: Path
+    target_studio_app: Path
 
 
 def repo_v2_root() -> Path:
@@ -44,9 +52,12 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
     target_parallel_selfplay = target / "darwinchess" / "parallel_selfplay.py"
     source_parallel_selfplay = overlay_root / "darwinchess" / "parallel_selfplay.py"
     target_backend = target / "studio" / "backend.py"
+    target_app = target / "studio" / "app.py"
     target_evolution = target / "studio" / "pages" / "evolution.py"
+    target_dynasty = target / "studio" / "pages" / "dynasty.py"
     source_backend = overlay_root / "studio" / "backend.py"
     source_evolution = overlay_root / "studio" / "pages" / "evolution.py"
+    source_dynasty = overlay_root / "studio" / "pages" / "dynasty.py"
 
     required = [
         source,
@@ -57,9 +68,11 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         target_parallel_selfplay,
         source_parallel_selfplay,
         target_backend,
+        target_app,
         target_evolution,
         source_backend,
         source_evolution,
+        source_dynasty,
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -79,8 +92,11 @@ def make_plan(target_root: str | Path) -> OverlayPlan:
         target_parallel_selfplay,
         source_backend,
         source_evolution,
+        source_dynasty,
         target_backend,
         target_evolution,
+        target_dynasty,
+        target_app,
     )
 
 
@@ -107,6 +123,26 @@ def patch_cli(text: str) -> str:
     return text.replace(OLD_EVOLVE, NEW_EVOLVE, 1)
 
 
+def patch_studio_app(text: str) -> str:
+    if STUDIO_DYNASTY_IMPORT not in text:
+        if STUDIO_EVOLUTION_IMPORT not in text:
+            raise RuntimeError("could not find Studio Evolution import anchor")
+        text = text.replace(
+            STUDIO_EVOLUTION_IMPORT,
+            STUDIO_EVOLUTION_IMPORT + STUDIO_DYNASTY_IMPORT,
+            1,
+        )
+    if STUDIO_DYNASTY_PAGE not in text:
+        if STUDIO_EVOLUTION_PAGE not in text:
+            raise RuntimeError("could not find Studio Evolution page anchor")
+        text = text.replace(
+            STUDIO_EVOLUTION_PAGE,
+            STUDIO_EVOLUTION_PAGE + STUDIO_DYNASTY_PAGE,
+            1,
+        )
+    return text
+
+
 def _backup(path: Path) -> Path:
     backup = path.with_suffix(path.suffix + ".pre_v2")
     if not backup.exists():
@@ -117,6 +153,7 @@ def _backup(path: Path) -> Path:
 def apply_overlay(plan: OverlayPlan) -> None:
     pyproject_text = patch_pyproject(plan.pyproject.read_text(encoding="utf-8"))
     cli_text = patch_cli(plan.cli.read_text(encoding="utf-8"))
+    studio_app_text = patch_studio_app(plan.target_studio_app.read_text(encoding="utf-8"))
 
     for path in (
         plan.pyproject,
@@ -125,8 +162,11 @@ def apply_overlay(plan: OverlayPlan) -> None:
         plan.target_parallel_selfplay,
         plan.target_studio_backend,
         plan.target_evolution_page,
+        plan.target_studio_app,
     ):
         _backup(path)
+    if plan.target_dynasty_page.exists():
+        _backup(plan.target_dynasty_page)
 
     if plan.target_package.exists():
         backup_package = plan.target_root / "dogmatist_v2.pre_v2"
@@ -140,10 +180,12 @@ def apply_overlay(plan: OverlayPlan) -> None:
     )
     plan.pyproject.write_text(pyproject_text, encoding="utf-8")
     plan.cli.write_text(cli_text, encoding="utf-8")
+    plan.target_studio_app.write_text(studio_app_text, encoding="utf-8")
     shutil.copy2(plan.source_search, plan.target_search)
     shutil.copy2(plan.source_parallel_selfplay, plan.target_parallel_selfplay)
     shutil.copy2(plan.source_studio_backend, plan.target_studio_backend)
     shutil.copy2(plan.source_evolution_page, plan.target_evolution_page)
+    shutil.copy2(plan.source_dynasty_page, plan.target_dynasty_page)
 
 
 def describe(plan: OverlayPlan) -> str:
@@ -157,6 +199,8 @@ def describe(plan: OverlayPlan) -> str:
         f"  worker guard: {plan.target_parallel_selfplay}",
         f"  replace UI:   {plan.target_studio_backend}",
         f"  replace UI:   {plan.target_evolution_page}",
+        f"  patch UI nav: {plan.target_studio_app}",
+        f"  add UI page:  {plan.target_dynasty_page}",
         "  state data:   NOT touched by this installer",
         "  teacher:      defaults OFF until copied-state validation passes",
         "  opening book: NOT injected; search-r2 only spends one extra ply when enabled",
