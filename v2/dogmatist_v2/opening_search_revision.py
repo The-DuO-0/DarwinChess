@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 from typing import Iterable
 
 from .opening_stability import OpeningSearchStabilityReport
@@ -211,8 +212,6 @@ def select_verification_candidates(
         if len(selected) < max_candidates:
             selected.append(previous)
         else:
-            # Preserve the current shallow best and replace the least-priority
-            # selected alternative with the previous iteration's principal move.
             selected[-1] = previous
 
     deduped: list[str] = []
@@ -220,6 +219,31 @@ def select_verification_candidates(
         if move not in deduped:
             deduped.append(move)
     return tuple(deduped[:max_candidates])
+
+
+def select_holdout_opening_names(
+    opening_names: Iterable[str],
+    *,
+    excluded_names: Iterable[str],
+    pair_count: int,
+    seed: int,
+) -> tuple[str, ...]:
+    """Select a deterministic, disjoint opening holdout for engine-revision gates.
+
+    This helper is deliberately ignorant of move quality. It only prevents the
+    final gate from reusing opening names already seen during revision tuning.
+    The returned names are shuffled by a dedicated seed and contain no duplicates.
+    """
+
+    if pair_count <= 0:
+        raise ValueError("pair_count must be positive")
+    excluded = {str(name) for name in excluded_names}
+    pool = sorted({str(name) for name in opening_names if str(name) not in excluded})
+    if len(pool) < pair_count:
+        raise ValueError("not enough disjoint opening names for requested holdout")
+    rng = random.Random(int(seed))
+    rng.shuffle(pool)
+    return tuple(pool[:pair_count])
 
 
 @dataclass(frozen=True)
