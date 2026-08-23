@@ -42,6 +42,52 @@ The existing `EngineRevisionGate` is applied without weakening thresholds:
 
 The holdout harness is copy-state-only and performs no model training, champion promotion, replay write, or live-state mutation.
 
+## Real Mac independent holdout result
+
+The first independent holdout used six unseen starts:
+
+- Slav
+- Open Game
+- QGD
+- Scandinavian
+- Grunfeld
+- Caro-Kann
+
+Result on frozen Gen54:
+
+- score: 0.417
+- W/D/L: 0/10/2
+- fixed-reference delta vs frozen search-r1: -0.083
+- node ratio r2c/r1: 0.967x
+- time ratio r2c/r1: 0.957x
+- engine gate: `REJECT` because fixed-reference strength regressed
+
+Both decisive losses occurred in the Slav pair; all other holdout games were draws. This is not statistical proof that r2c is globally weaker, but the gate is intentionally conservative and therefore r2c is **not adoptable**.
+
+The failed holdout is now consumed diagnostic data. It must not be reused as the final acceptance holdout for a later revision.
+
+## Failure forensics before r2d
+
+`run_search_r2_failure_probe.py` replays one or more failed holdout openings (default: Slav), records every position where r2c actually spends selective +1 search, and then analyzes those exact FENs three ways:
+
+1. baseline search-r1 at depth 2;
+2. the move r2c selected during the game;
+3. a fresh full-root depth-3 search with stabilization disabled.
+
+For every stabilization it classifies the change as:
+
+- `helpful_flip`: r2c matches full depth 3 while r1 does not;
+- `harmful_flip`: r1 matches full depth 3 while r2c does not;
+- `same_as_full`: both match full depth 3;
+- `both_differ_from_full`: neither matches full depth 3.
+
+It also reports candidate and baseline regret in centipawns relative to the full depth-3 best move. This distinguishes two very different failure modes:
+
+- the selective-root approximation chose the wrong deeper move, suggesting a safer replacement rule or a better verification set;
+- full depth 3 itself prefers the r2c move, suggesting the loss is not simply a selective-root bug and the opening policy/trigger needs a different treatment.
+
+No r2d policy should be tuned until this diagnosis is available. Once Slav is used for failure analysis, the next final holdout must exclude both the original development openings and this first holdout set.
+
 ## Adoption rule
 
-Even an `ACCEPT` from the holdout harness does not silently modify live production. It is evidence permitting the revision to be registered/adopted through the explicit engine-revision lifecycle, followed by a copied-state full-cycle validation before any live installation.
+Even an `ACCEPT` from a future untouched holdout does not silently modify live production. It is evidence permitting the revision to be registered/adopted through the explicit engine-revision lifecycle, followed by a copied-state full-cycle validation before any live installation.
