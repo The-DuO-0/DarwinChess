@@ -139,6 +139,20 @@ def test_holdout_selector_is_disjoint_unique_and_deterministic():
     assert not (set(first) & development)
 
 
+def test_holdout_selector_refuses_overlap_when_pool_is_too_small():
+    try:
+        select_holdout_opening_names(
+            ["A", "B", "C"],
+            excluded_names={"B", "C"},
+            pair_count=2,
+            seed=1,
+        )
+    except ValueError as exc:
+        assert "not enough disjoint" in str(exc)
+    else:
+        raise AssertionError("expected holdout selector to reject insufficient disjoint pool")
+
+
 def test_later_opening_ply_deepens_when_candidate_margin_is_small():
     policy = OpeningSearchR2Policy()
     evidence = OpeningSearchEvidence(
