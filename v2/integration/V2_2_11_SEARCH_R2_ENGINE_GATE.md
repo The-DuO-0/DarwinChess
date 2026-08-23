@@ -13,7 +13,7 @@ Frozen Gen54, identical model weights, paired colours:
 - r2a broad +1 ply: 0.375 over 4 games, 1.646x time -> rejected on compute.
 - r2b confidence-gated +1: 0.500 over 4 games, 1.607x time -> rejected on compute.
 - r2c selective-root smoke: 0.625 over 4 games, 1.131x time -> promising.
-- r2c 12-game development A/B: 0.583, W/D/L 3/8/1, node ratio 1.178x, time ratio 1.201x -> ready for independent holdout.
+- r2c 12-game development A/B: 0.583, W/D/L 3/8/1, node ratio 1.178x, time ratio 1.201x -> `READY_FOR_FIXED_REFERENCE_GATE`.
 
 The root probe remained repaired: search-r1 `h2h4` -> search-r2c `e2e4`.
 
